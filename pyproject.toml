@@ -3,21 +3,35 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
+# The distribution is named for the package it installs, and the package is the
+# multi-cloud home: `remgen.core` plus one `remgen.providers.<cloud>` per cloud.
+# The repository is `curated-cloud-remediation-generator` and the AWS command is
+# `awsremgen`; three names for three different things, as with
+# kubernetes/k8s/kubectl.
 name = "remgen"
 version = "0.1.0"
-description = "Generates review-ready aws-cli and OpenTofu/Terraform remediation artifacts for a curated subset of Tenable Cloud Security AWS policies."
+description = "Generates review-ready vendor-CLI and OpenTofu/Terraform remediation artifacts for a curated subset of Tenable Cloud Security cloud policies."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Tenable, Inc." }]
-keywords = ["aws", "tenable", "cloud-security", "remediation", "opentofu", "terraform"]
+keywords = [
+    "cloud-security",
+    "remediation",
+    "tenable",
+    "cspm",
+    "aws",
+    "opentofu",
+    "terraform",
+]
 
 # ---------------------------------------------------------------------------
 # ZERO required runtime dependencies. Everything below is stdlib-only.
 #
-# AWS API shapes are read from the botocore service models that ship inside
-# AWS CLI v2 (or an installed botocore, if present). Neither is imported as a
-# Python dependency; the JSON model files are read from disk. See remgen.drift.
+# Each provider verifies its recipes against that cloud's own published API
+# definitions, read from disk rather than imported: the AWS provider reads the
+# botocore service models that ship inside AWS CLI v2 (or an installed botocore,
+# if present). Neither is a Python dependency. See remgen.providers.aws.drift.
 # ---------------------------------------------------------------------------
 dependencies = []
 
@@ -30,11 +44,14 @@ dev = [
 ]
 
 [project.scripts]
-remgen = "remgen.cli:main"
+# One command per cloud, not one command with a --cloud flag: credentials, recipe
+# coverage and API verification are all per cloud, so a single command would imply
+# an estate-wide run that no single credential set can perform.
+awsremgen = "remgen.providers.aws.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Echo6Bravo/curated-aws-remediation-generator"
-Issues = "https://github.com/Echo6Bravo/curated-aws-remediation-generator/issues"
+Homepage = "https://github.com/Echo6Bravo/curated-cloud-remediation-generator"
+Issues = "https://github.com/Echo6Bravo/curated-cloud-remediation-generator/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -47,6 +64,14 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+# Formatting is mechanical and enforced in CI (`ruff format --check`), so it is
+# never a review topic. Declared explicitly, empty, rather than left to the
+# default: `ruff format` reads line-length above whether or not this section
+# exists, so its absence looked like an opt-out while the tool in fact had an
+# opinion -- leaving `--check` permanently red with no way for a reader to tell
+# whether that was a real finding or a tool the project does not use.
+[tool.ruff.format]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "RET", "SIM"]

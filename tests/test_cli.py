@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-from remgen.cli import main
-from remgen.recipes import all_recipes
+from remgen.providers.aws.cli import main
+from remgen.providers.aws.recipes import all_recipes
 
 GOOD = {
     "cloudtrail": {
@@ -108,21 +108,22 @@ def _run(argv):
     return main(argv)
 
 
-# Output is split per account (and per region for HCL), so tests locate artifacts
-# by extension rather than by a fixed filename. See remgen.layout for the rules.
+# Output is split per cloud, per account, and per region for HCL, so tests locate
+# artifacts by extension anywhere under the output directory rather than by a fixed
+# filename or a fixed depth. See remgen.core.layout for the rules.
 
 
 def _scripts(out):
-    return sorted(out.glob("*.sh"))
+    return sorted(out.rglob("*.sh"))
 
 
 def _tfs(out):
-    return sorted(out.glob("*.tf"))
+    return sorted(out.rglob("*.tf"))
 
 
 def _joined(out, ext):
     """Concatenate every artifact of one type, for whole-output assertions."""
-    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(out.glob(f"*{ext}")))
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(out.rglob(f"*{ext}")))
 
 
 # ---------------------------------------------------------------------------
@@ -140,27 +141,37 @@ def test_generate_writes_both_artifacts(env, capsys):
     assert "made no AWS changes" in captured
 
 
-def test_generate_defaults_to_safest_tier_and_says_what_it_withheld(env, capsys):
+def test_generate_defaults_to_safest_level_and_says_what_it_withheld(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(["generate", "--findings", str(findings), "--out", str(env / "art")])
     captured = capsys.readouterr().out
     # A silent cap would read as "nothing more to do".
-    assert "Withheld by safety tier" in captured
-    assert "--tier caution" in captured
+    assert "Withheld by safety level" in captured
+    assert "--safety-level caution" in captured
 
 
-def test_tier_all_includes_more_remediations(env, capsys):
+def test_safety_level_all_includes_more_remediations(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(["generate", "--findings", str(findings), "--out", str(env / "safe")])
     safe_out = capsys.readouterr().out
-    _run(["generate", "--findings", str(findings), "--out", str(env / "all"), "--tier", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "all"),
+            "--safety-level",
+            "all",
+        ]
+    )
     all_out = capsys.readouterr().out
 
     safe_script = _joined(env / "safe", ".sh")
     all_script = _joined(env / "all", ".sh")
     assert all_script.count("aws ") > safe_script.count("aws ")
-    assert "Withheld by safety tier" not in all_out
-    assert "Withheld by safety tier" in safe_out
+    assert "Withheld by safety level" not in all_out
+    assert "Withheld by safety level" in safe_out
 
 
 def test_generate_reports_unsupported_policies(env, capsys):
@@ -212,13 +223,242 @@ def test_script_is_executable(env):
 
 
 # ---------------------------------------------------------------------------
+# --safety-level
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("level", ["safest", "caution", "all"])
+def test_each_safety_level_is_a_superset_of_the_safer_ones(env, capsys, level):
+    """The levels are cumulative, so raising one never removes a remediation.
+
+    "I accept irreversible changes" does not mean "and not the safe ones". A
+    non-cumulative level would drop safe fixes the moment a user opted into risky
+    ones, which is the opposite of what the flag reads as.
+    """
+    findings = _write(env / "f.json", list(GOOD.values()))
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / level),
+            "--safety-level",
+            level,
+        ]
+    )
+    capsys.readouterr()
+    written = _joined(env / level, ".sh")
+    safest = None
+    if level != "safest":
+        _run(["generate", "--findings", str(findings), "--out", str(env / "base")])
+        capsys.readouterr()
+        safest = _joined(env / "base", ".sh")
+    if safest is not None:
+        # Every command the safest run emitted must still be present.
+        for line in (ln for ln in safest.splitlines() if ln.startswith("aws ")):
+            assert line in written, f"raising the level dropped: {line}"
+
+
+def test_an_unknown_safety_level_is_rejected_by_the_parser(env, capsys):
+    # argparse choices, so the error names the accepted values rather than silently
+    # falling back to a default the user did not ask for.
+    findings = _write(env / "f.json", list(GOOD.values()))
+    with pytest.raises(SystemExit) as exc:
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "reckless",
+            ]
+        )
+    assert exc.value.code == 2
+    assert "safest" in capsys.readouterr().err
+
+
+def test_help_lists_both_new_flags_and_names_the_command(capsys):
+    # --help is the only documentation a user reaches without leaving the terminal.
+    with pytest.raises(SystemExit):
+        main(["generate", "--help"])
+    out = capsys.readouterr().out
+    assert "awsremgen" in out
+    assert "--format" in out
+    assert "--safety-level" in out
+    # The old spelling must be gone, not aliased: two spellings for one setting
+    # invites passing both and guessing precedence.
+    assert "--tier" not in out
+
+
+# ---------------------------------------------------------------------------
+# --format
+# ---------------------------------------------------------------------------
+
+
+def test_default_writes_both_formats(env):
+    # Complementary rather than alternative: the script for a one-off fix, the HCL
+    # for resources already under IaC. Defaulting to one would silently withhold the
+    # other from a user who never read the flag.
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out)]) == 0
+    assert _scripts(out)
+    assert _tfs(out)
+
+
+@pytest.mark.parametrize(
+    ("value", "want_sh", "want_tf"),
+    [
+        ("cli", True, False),
+        ("hcl", False, True),
+        ("all", True, True),
+        ("cli,hcl", True, True),
+        # Order must not matter: the same request spelled two ways is one run.
+        ("hcl,cli", True, True),
+        # Tolerated so a value pasted from a shell with spacing still works.
+        (" CLI , hcl ", True, True),
+    ],
+)
+def test_format_selects_exactly_what_was_asked_for(env, value, want_sh, want_tf):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    assert (
+        _run(["generate", "--findings", str(findings), "--out", str(out), "--format", value]) == 0
+    )
+    assert bool(_scripts(out)) is want_sh
+    assert bool(_tfs(out)) is want_tf
+
+
+@pytest.mark.parametrize("value", ["", "cli,", "sdk", "cli,sdk", ",", "terraform"])
+def test_an_unknown_format_is_an_error_not_a_silent_omission(env, capsys, value):
+    """A typo must fail rather than emit less.
+
+    Accepting ``--format cli,tf`` and quietly writing only the script produces a run
+    that looks complete and is missing half its output -- indistinguishable, to the
+    reader, from a tool that found nothing to fix.
+    """
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    code = _run(["generate", "--findings", str(findings), "--out", str(out), "--format", value])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "--format" in captured.err
+    assert "Traceback" not in captured.err + captured.out
+    # Nothing was written, so a failed run leaves no partial output to mistake for a
+    # complete one.
+    assert not out.exists() or not (_scripts(out) + _tfs(out))
+
+
+def test_format_is_reported_in_the_summary(env, capsys):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "cli",
+        ]
+    )
+    assert "Formats: cli" in capsys.readouterr().out
+
+
+def test_hcl_only_reports_the_remediations_it_could_not_express(env, capsys):
+    """Selecting HCL alone drops CLI-only policies, so the count must be stated.
+
+    Some policies have no IaC equivalent. Writing nothing for them and saying nothing
+    would report a successful run that silently skipped findings it had a recipe for.
+    """
+    findings = _write(env / "f.json", list(GOOD.values()))
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "hcl",
+            "--safety-level",
+            "all",
+        ]
+    )
+    out = capsys.readouterr().out
+    cli_only = [r for r in all_recipes() if r.hcl is None]
+    if cli_only:
+        assert "no IaC equivalent" in out
+    else:
+        assert "no IaC equivalent" not in out
+
+
+def test_hcl_only_does_not_mention_todo_placeholders_for_output_it_did_not_write(env, capsys):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "cli",
+        ]
+    )
+    # There are no resource blocks in a script, so pointing the reader at TODOs sends
+    # them looking for markers that are not there.
+    assert "TODO placeholders" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Output layout
+# ---------------------------------------------------------------------------
+
+
+def test_artifacts_are_written_under_a_per_cloud_directory(env):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    _run(["generate", "--findings", str(findings), "--out", str(out)])
+    for path in _scripts(out) + _tfs(out):
+        assert path.parent == out / "aws", f"{path} is not under the cloud directory"
+    # The companion files stay at the top: one README and one index cover the run, so
+    # a finding that produced no artifact is still reconcilable from a single place.
+    assert (out / "README.md").is_file()
+    assert (out / "manifest.json").is_file()
+
+
+def test_manifest_paths_resolve_from_the_output_directory(env):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    _run(["generate", "--findings", str(findings), "--out", str(out)])
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["clouds"] == ["aws"]
+    for entry in manifest["files"]:
+        assert (out / entry["path"]).is_file(), entry["path"]
+
+
+# ---------------------------------------------------------------------------
 # Injection resistance -- the highest-consequence property
 # ---------------------------------------------------------------------------
 
 
 def test_malicious_findings_never_reach_artifacts(env, capsys):
     findings = _write(env / "f.json", MALICIOUS + list(GOOD.values()))
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     captured = capsys.readouterr().out
     assert "rejected" in captured
 
@@ -249,7 +489,17 @@ def test_malicious_findings_are_reported_as_rejected(env, capsys):
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 def test_generated_script_parses_as_bash(env):
     findings = _write(env / "f.json", list(GOOD.values()) + MALICIOUS)
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     scripts = _scripts(env / "art")
     assert scripts
     for script in scripts:
@@ -285,7 +535,7 @@ def _tofu_check(tf_file, work):
     work.mkdir(parents=True, exist_ok=True)
     shutil.copy(tf_file, work / "main.tf")
     (work / "provider.tf").write_text(
-        'terraform {\n  required_providers {\n'
+        "terraform {\n  required_providers {\n"
         '    aws = { source = "hashicorp/aws", version = "~> 5.0" }\n'
         "  }\n}\n"
         'provider "aws" {\n  region = "us-east-1"\n}\n',
@@ -333,7 +583,17 @@ def _tofu_check_all(out, work_root):
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
 def test_generated_hcl_is_valid_and_formatted(env):
     findings = _write(env / "f.json", list(GOOD.values()) + MALICIOUS)
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     _tofu_check_all(env / "art", env / "work")
 
 
@@ -352,9 +612,20 @@ def test_same_resource_name_in_two_accounts_still_validates(env):
     dev = dict(GOOD["dynamodb"], region="us-east-1", accountId="111111111111")
     prod = dict(GOOD["dynamodb"], region="us-west-2", accountId="222222222222")
     findings = _write(env / "f.json", [dev, prod])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
 
     # One file per account, each with exactly one block, and no file naming both.
     files = _tfs(env / "art")
@@ -372,7 +643,17 @@ def test_same_resource_name_in_two_accounts_still_validates(env):
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
 def test_every_recipe_pairs_one_import_with_one_resource(env):
     findings = _write(env / "f.json", list(GOOD.values()))
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     text = _joined(env / "art", ".tf")
     # A resource block without an import block would create a duplicate resource.
     assert text.count("import {") == text.count('\nresource "')
@@ -448,7 +729,7 @@ def test_verify_reports_model_source(env, capsys):
         assert "could not be checked" in captured
 
 
-def test_recipes_lists_tiers_and_safety_notes(env, capsys):
+def test_recipes_lists_levels_and_safety_notes(env, capsys):
     assert _run(["recipes"]) == 0
     captured = capsys.readouterr().out
     assert "SAFEST" in captured
@@ -461,7 +742,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "remgen" in capsys.readouterr().out
+    assert "awsremgen" in capsys.readouterr().out
 
 
 def test_no_subcommand_is_an_error(capsys):
@@ -537,10 +818,14 @@ def test_unwritable_cache_dir_warns_and_exits_degraded(env, capsys):
         code = _run(
             [
                 "generate",
-                "--findings", str(findings),
-                "--catalog", str(catalog),
-                "--out", str(env / "art"),
-                "--cache-dir", str(ro / "cache"),
+                "--findings",
+                str(findings),
+                "--catalog",
+                str(catalog),
+                "--out",
+                str(env / "art"),
+                "--cache-dir",
+                str(ro / "cache"),
             ]
         )
         captured = capsys.readouterr()
@@ -639,9 +924,20 @@ def test_duplicate_findings_are_merged_and_counted(env, capsys):
     # than being a silent change to the record count.
     one = GOOD["dynamodb"]
     findings = _write(env / "f.json", [one, one, one])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "Records read:         3" in out
     assert "duplicates merged:  2" in out
@@ -659,9 +955,20 @@ def test_same_resource_in_different_accounts_is_not_a_duplicate(env, capsys):
     dev = dict(GOOD["dynamodb"], accountId="111111111111")
     prod = dict(GOOD["dynamodb"], accountId="222222222222")
     findings = _write(env / "f.json", [dev, prod])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--tier", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "duplicates merged" not in out
     assert "Remediations written: 2" in out

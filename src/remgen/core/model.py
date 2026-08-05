@@ -7,7 +7,7 @@ once and rendered into every output format.
 Design rules that keep the generators honest:
 
 * A recipe declares the AWS API operation and parameters it relies on, so
-  :mod:`remgen.drift` can independently verify those still exist in the AWS
+  :mod:`remgen.providers.aws.drift` can independently verify those still exist in the AWS
   service model. A recipe that cannot be verified is a bug, not a warning.
 * A recipe declares its HCL resource type *and* the identifier shape needed to
   ``import`` an existing resource. Terraform/OpenTofu only manage what is in
@@ -94,9 +94,7 @@ def collapse_whitespace(value: str, *, limit: int = MAX_TEXT_LENGTH) -> str:
     if not isinstance(value, str):
         return ""
     cleaned = "".join(
-        " " if ch.isspace() else ch
-        for ch in value
-        if ch.isprintable() or ch.isspace()
+        " " if ch.isspace() else ch for ch in value if ch.isprintable() or ch.isspace()
     )
     collapsed = " ".join(cleaned.split())
     if len(collapsed) > limit:
@@ -171,7 +169,7 @@ class SafetyTier(str, Enum):
 class ApiCall:
     """The AWS API operation a remediation performs.
 
-    This is the contract :mod:`remgen.drift` verifies against the shipped
+    This is the contract :mod:`remgen.providers.aws.drift` verifies against the shipped
     botocore service model, which is why the parameter names are recorded
     explicitly rather than being buried in a format string.
     """
@@ -248,9 +246,7 @@ class HclTarget:
     @property
     def is_complete(self) -> bool:
         """True when the emitted resource block needs no human completion."""
-        return not (
-            self.unresolvable_required_attributes or self.unresolvable_required_blocks
-        )
+        return not (self.unresolvable_required_attributes or self.unresolvable_required_blocks)
 
     @property
     def unresolvable_names(self) -> tuple[str, ...]:
@@ -332,11 +328,7 @@ class Recipe:
         Derived rather than hand-set so a recipe author cannot accidentally
         label something safe while also declaring it irreversible.
         """
-        if (
-            self.data_path_impact
-            or self.needs_replacement
-            or self.effort is Effort.MEDIUM
-        ):
+        if self.data_path_impact or self.needs_replacement or self.effort is Effort.MEDIUM:
             return SafetyTier.DISRUPTIVE
         if (
             not self.reversible

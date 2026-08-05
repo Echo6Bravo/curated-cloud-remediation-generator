@@ -6,7 +6,60 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: the command is now `awsremgen`, not `remgen`.** The package restructured into a
+  cloud-neutral core (`remgen.core`) plus one provider per cloud (`remgen.providers.aws`), so a
+  second cloud can be added without editing the code that decides what AWS emits. The cloud is
+  bound at the command name rather than a `--cloud` flag: it selects the recipe set, the
+  API-definition verifier and the identity preflight all at once, so reading it from a flag would
+  make "wrong cloud against these credentials" a reachable state. `--help` also stays accurate,
+  because every cloud-specific string in it comes from the provider descriptor. There is no
+  `remgen` shim; a command that silently became a different command would be worse than one that
+  is not found.
+- **BREAKING: `--tier` is now `--safety-level`.** No alias was kept. Two spellings for one setting
+  invites passing both, at which point the tool has to guess a precedence the user never stated.
+  A test asserts `--tier` no longer appears in `--help`. The levels are unchanged and remain
+  cumulative — each includes everything less risky.
+- **BREAKING: artifacts are written under a per-cloud directory** (`artifacts/aws/…`) and the cloud
+  now appears in every filename (`remediate-aws-111111111111-us-east-1.tf`). `README.md` and
+  `manifest.json` stay at the output root rather than one per cloud, because reconciling a run —
+  showing that a finding without an artifact was *withheld or unsupported*, not lost — is a
+  property of the whole run and no single per-cloud index could answer it.
+- **BREAKING: manifest keys are cloud-neutral.** `accounts` → `scopes`, and each file entry's
+  `account_id` → `scope_id` with the cloud's own word alongside it in `scope_noun`. New per-entry
+  `cloud` and `path` fields, and a top-level `clouds` list. Renamed rather than aliased so a
+  consumer reads one field on every cloud instead of probing for `account_id` or `subscription_id`.
+- Whether region is a hard boundary for HCL is now declared per provider rather than assumed. It is
+  true for `hashicorp/aws`, where region is set on the provider; `azurerm` takes `location` per
+  resource and would not split the same way.
+- `ruff format` is now adopted and enforced in CI. `ruff check` (linter) and `ruff format`
+  (autoformatter) are separate tools sharing one binary, and only the first was being run — but
+  `ruff format` reads `line-length` from `[tool.ruff]` whether a project opts in or not, so it
+  already had an opinion and 14 of 38 files disagreed with it. That left `--check` permanently red
+  with nothing recording whether it was a real finding or a tool the project ignored. Verified not
+  to touch generated output: a regenerated sample diffs byte-for-byte, including the transcript.
+- `recipe_notes(full=True)` and the `docs_label` chain that fed it (`Provider.docs_label` through
+  `render_hcl` and `hcl_recipe_notes`) are removed — all unreachable, since `docs_label` was read
+  only inside `if full:`. Replaced by a test asserting the summary, prerequisites, caveats and docs
+  link appear in the run README and **not** in the `.sh`/`.tf`. `full=True` was the switch that
+  would have undone the artifact-size work with every other test still green, so the guard replaces
+  it rather than the deletion just removing it. One assertion that looked like it covered this
+  (`"AWS docs" in out or not any(r.docs_url ...)`) was passing vacuously on a fixture with no
+  `docs_url`.
+
 ### Added
+- **`--format`** selects which output formats to write, as a comma-separated list (`cli`, `hcl`,
+  `all`; default `all`). A value list rather than a boolean per format: a pair of booleans has an
+  ambiguous "neither passed" state, and per-format flag *names* would not survive a second cloud.
+  An unknown name is a hard error (exit 2) with nothing written, because a typo that quietly emits
+  half the output looks like a tool that lost findings. Values are reordered canonically, so
+  `hcl,cli` and `cli,hcl` produce byte-identical runs. Choosing `hcl` alone omits policies with no
+  IaC equivalent and reports the count.
+- **`tests/test_structure.py`** enforces the layering that two module docstrings already claimed a
+  test enforced: `core` may not import from `providers`, and no provider may import another. Imports
+  are read from the AST rather than by importing the module, so a lazy import inside a function body
+  cannot satisfy the rule while breaking it. It also asserts the module set is non-empty, since the
+  failure mode of a structural test is reporting green while checking nothing.
 - **A committed sample run under `examples/`** — the input findings, the console output verbatim,
   and every artifact produced, with [`examples/README.md`](./examples/README.md) explaining why one
   input yields five artifacts, what a `TODO` placeholder means, and what happens to a malformed
@@ -26,10 +79,26 @@ All notable changes to this project are documented here. The format follows
 ### Notes
 - `examples/sample-output/` is *not* named `artifacts/` because `.gitignore` matches `artifacts/` at
   any depth; that name would have committed nothing while every doc still pointed at it.
+- The `sample`, `docs-refs` and `claims` CI jobs walk the output tree recursively now that artifacts
+  sit under a per-cloud directory, and compare by path relative to the output root rather than by
+  basename — two clouds may legitimately produce the same filename in different directories, and a
+  basename match would compare the wrong pair. Each glob-driven check asserts it found files first,
+  because a glob that stops matching turns a blocking gate into a no-op that still reports green.
+- Structure is not coverage: Azure, GCP and OCI have a place to live but no recipes, no safety
+  analysis and no API-definition verifier. Nothing in this release adds a second cloud.
+- Several abstractions were deliberately *not* built yet, and say so in their docstrings: no shared
+  shell-script skeleton, no plugin discovery for providers, and the scope hierarchy stays two levels
+  deep. Each waits for the commit that adds a real second cloud, since guessing what two clouds
+  share from a sample of one is how the wrong seam gets frozen in.
 
 ## [0.1.0] — 2026-08-04
 
 Initial release. Pre-1.0: the CLI surface and recipe schema may still change.
+
+> Left as written. The command names and module paths below (`remgen`, `--tier`,
+> `src/remgen/sources.py`) are what this version actually shipped; see *Unreleased* above for what
+> they are now. A changelog edited to match the present cannot be used to tell when something
+> changed, which is the one thing it is for.
 
 ### Added
 - **`remgen` CLI** with four subcommands — `generate` (emit artifacts), `recipes` (list coverage

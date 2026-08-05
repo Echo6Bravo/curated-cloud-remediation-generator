@@ -1,8 +1,8 @@
 # Roadmap
 
-This file exists because three source modules point at it (`sources.py`,
-`recipes/aws_curated.py`, `generators/__init__.py`). Each deliberately does *less* than it could,
-and this is where the reasoning lives so a reader can check it rather than guess.
+This file exists because three source modules point at it (`core/sources.py`,
+`providers/aws/recipes/curated.py`, `core/generators/__init__.py`). Each deliberately does *less*
+than it could, and this is where the reasoning lives so a reader can check it rather than guess.
 
 Nothing here is a commitment to a date. Items are ordered by what would most increase the tool's
 value per unit of added risk.
@@ -14,28 +14,31 @@ Recording the shape of it so it can be decided on purpose.
 
 **Where things stand today.** Non-reversible remediations already ship, but never by default. KMS
 automatic key rotation cannot be fully undone once enabled, and it is classified `caution`, so
-`--tier safest` (the default) will not emit it. A user must pass `--tier caution` to get it. So the
-current answer is *"yes, gated behind an explicit flag."*
+`--safety-level safest` (the default) will not emit it. A user must pass `--safety-level caution` to
+get it. So the current answer is *"yes, gated behind an explicit flag."*
 
-**Why that may not be enough.** A tier flag is a single decision applied to a whole run. A user who
-passes `--tier caution` for one recipe they understand gets *every* caution-tier recipe in the same
-breath, including ones they have not thought about. The flag communicates "I accept risk in
-general," not "I accept this specific irreversible change to these specific resources." Those are
+**Why that may not be enough.** `--safety-level` is a single decision applied to a whole run. A user
+who passes `--safety-level caution` for one recipe they understand gets *every* caution-level recipe
+in the same breath, including ones they have not thought about. The flag communicates "I accept risk
+in general," not "I accept this specific irreversible change to these specific resources." Those are
 different consents, and the tool currently cannot tell them apart.
+
+Renaming `--tier` to `--safety-level` did not change this. It made the flag say what it gates; it
+still gates a whole run.
 
 **Options, with the tradeoff each makes.**
 
-1. **Keep the tier flag as-is.** Simplest, and already conservative by default. Cost: the
+1. **Keep `--safety-level` as-is.** Simplest, and already conservative by default. Cost: the
    whole-run consent problem above.
 2. **Per-recipe opt-in** (`--allow kms-key-rotation`), where irreversible recipes require naming
-   the specific recipe rather than a tier. Consent becomes specific. Cost: more friction, and a
+   the specific recipe rather than a level. Consent becomes specific. Cost: more friction, and a
    longer command line that users will be tempted to script around — at which point the friction
    stops working.
 3. **Emit irreversible remediations, but commented out** with the warning and the enabling
    instruction inline. The artifact documents the fix without arming it. Cost: a reviewer may
    uncomment mechanically without reading, and it makes the artifact less directly runnable.
 4. **Split them into a separate output file** (`irreversible.sh`) that must be run deliberately.
-   Cost: another file to reconcile, and it fragments the per-account/per-region layout that
+   Cost: another file to reconcile, and it fragments the per-cloud/per-account/per-region layout that
    currently has a correctness justification.
 5. **Never ship them.** Safest, and cheapest to reason about. Cost: excludes real security value —
    key rotation is genuinely worth doing.
@@ -46,14 +49,15 @@ artifact**, next to the specific resource they apply to, never hoisted to a head
 file. A warning a reader has to go find is a warning that gets skipped. Reference detail
 (prerequisites, docs links, summaries) may be hoisted; consequence warnings may not.
 
-**Also unresolved:** whether "irreversible" and "expensive" deserve separate tiers. They are
+**Also unresolved:** whether "irreversible" and "expensive" deserve separate levels. They are
 currently both `caution`, but they fail differently — one is a permanent state change, the other is
 a recurring invoice. A user might reasonably accept one and refuse the other.
 
 **Recommendation if it must be decided now:** option 2 (per-recipe opt-in) for irreversible
-changes, keeping the tier flag for cost-scaled ones. It matches consent to the actual unit of
+changes, keeping `--safety-level` for cost-scaled ones. It matches consent to the actual unit of
 risk. This should be settled before coverage grows much, because every recipe added under the
-current scheme makes changing it more disruptive.
+current scheme makes changing it more disruptive — and adding a second cloud multiplies that, since
+each one brings its own irreversible operations under the same flag.
 
 ## Coverage
 
@@ -64,16 +68,47 @@ current scheme makes changing it more disruptive.
 - **Explicitly excluded, and why:** VPC flow logs is a single API call but bills on ingested volume
   with no ceiling. It stays out of the default set regardless of how easy it is to script. Ease of
   scripting is not a safety argument.
-- **Non-AWS clouds** (Azure, GCP) are out of scope. The safety analysis, IaC resource mapping, and
-  service-model verification are per-cloud work, not a parameterization of this one.
+
+## Additional clouds — Azure, GCP, OCI
+
+The structure to hold them now exists. `remgen.core` is cloud-neutral, output already splits by
+cloud, and everything cloud-specific reaches the shared pipeline through one
+`Provider` descriptor (`src/remgen/core/provider.py`); `src/remgen/providers/aws/` is the worked
+example. A test parses imports to keep `core` from depending on any provider, so adding a cloud
+cannot quietly change what AWS emits.
+
+**Structure is not coverage, and the hard part is not the structure.** Each cloud needs its own
+curated recipe set, its own safety classification per remediation, its own IaC resource and attribute
+mapping, and its own source of API definitions to verify against — the equivalent of the AWS
+service-model reader. None of that is a parameterization of the AWS work; it is the AWS work again.
+A cloud with a provider descriptor and no verified recipes would be a directory, not support.
+
+Known per-cloud differences already accounted for in the design:
+
+- **Credential scope is not "account" everywhere.** Azure has subscriptions, GCP has projects, OCI
+  has compartments and tenancies. The scope is carried as `scope_id` with the cloud's own word in
+  `scope_noun`, so a correct split is never described in the wrong cloud's vocabulary.
+- **Region is not always a provider-level binding.** `hashicorp/aws` sets region on the provider, so
+  HCL must split per region. `azurerm` takes `location` per resource and would not. This is declared
+  per provider rather than assumed, because assuming AWS's answer would over-split Azure output for
+  no correctness reason.
+- **A scope hierarchy deeper than two levels.** GCP projects nest under folders and organizations;
+  OCI compartments nest arbitrarily. The layout is deliberately two levels deep today and will need
+  revisiting for those, which is why it was not generalized in advance from a sample of one.
+
+**Deliberately not built yet, and stated in the relevant docstrings:** no shared shell-script
+skeleton, no plugin discovery for providers, no deeper scope hierarchy. Each waits for the commit
+that adds a real second cloud. Guessing what two clouds share from a sample of one is how the wrong
+seam gets frozen in, and this codebase's whole safety argument depends on the seams being in the
+right places.
 
 ## Sources — a live Tenable Cloud Security API adapter
 
-Referenced by `src/remgen/sources.py`.
+Referenced by `src/remgen/core/sources.py`.
 
 Findings are read from a JSON file you export. A live API adapter is not implemented because doing
 it properly needs tenant credentials to verify against, and an adapter that has never run against a
-real tenant would be untested code wearing the costume of a feature. `sources.py` defines the
+real tenant would be untested code wearing the costume of a feature. `core/sources.py` defines the
 interface such an adapter would implement, so the shape is settled even though the implementation
 is not.
 
@@ -84,12 +119,13 @@ so a silently truncated page cannot look like a clean run.
 
 ## Generators
 
-Referenced by `src/remgen/generators/__init__.py`.
+Referenced by `src/remgen/core/generators/__init__.py`.
 
 - **No boto3/Python-SDK generator.** It would be a third rendering of the same `ApiCall` with no
   capability the CLI script lacks, and every additional format is another surface that can silently
   drift from the service model. Adding it needs a concrete use case the existing two formats
-  cannot serve.
+  cannot serve. If one appears, `--format` already takes a list, so it is a new value rather than a
+  new flag.
 - **Possible:** a machine-readable plan output (JSON) describing what *would* be emitted, for
   pipelines that want to gate on the diff before artifacts exist.
 

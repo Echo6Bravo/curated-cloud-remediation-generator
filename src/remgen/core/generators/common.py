@@ -1,7 +1,7 @@
 """Shared rendering helpers.
 
 The important function here is :func:`render_template`. Every placeholder that
-reaches a generator is filled from a :class:`~remgen.model.Finding`, whose fields
+reaches a generator is filled from a :class:`~remgen.core.model.Finding`, whose fields
 are allowlist-validated at construction. This module adds a second, independent
 guard: it refuses to substitute a value that is not on the allowlist, even if a
 caller managed to construct a Finding some other way.
@@ -17,7 +17,13 @@ from __future__ import annotations
 import string
 import textwrap
 
-from remgen.model import Finding, Recipe, UnsafeIdentifierError, validate_identifier
+from remgen.core.model import (
+    Finding,
+    Recipe,
+    SafetyTier,
+    UnsafeIdentifierError,
+    validate_identifier,
+)
 
 #: Placeholders a template may reference, mapped to the Finding attribute used.
 _ALLOWED_FIELDS = {
@@ -155,11 +161,65 @@ def group_by_policy(
     return list(grouped.values())
 
 
+def tier_banner(tier: SafetyTier) -> str:
+    """Return a section banner for a safety tier.
+
+    Shared rather than per-format because the wording *is* the safety
+    classification, and two generators describing the same tier differently would
+    make the tiers look like presentation rather than a rule.
+    """
+    label = {
+        SafetyTier.SAFEST: ("SAFEST -- reversible, no data-path impact, no usage-scaled cost"),
+        SafetyTier.CAUTION: ("CAUTION -- sound, but carries a commitment. Read each note."),
+        SafetyTier.DISRUPTIVE: (
+            "DISRUPTIVE -- can affect availability or requires replacement. "
+            "Review individually; do not run unattended."
+        ),
+    }[tier]
+    bar = "=" * 74
+    return f"# {bar}\n# {label}\n# {bar}"
+
+
+def recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
+    """Return the comment lines that describe a recipe, independent of any finding.
+
+    Emitted once per policy rather than once per resource: every line here is
+    identical for all of that policy's findings. Cloud-neutral -- it reads only
+    :class:`~remgen.core.model.Recipe` fields -- so both the HCL generator in
+    ``core`` and each provider's shell generator render the same text from it. Two
+    formats writing their own version of a safety warning is how the two come to
+    disagree about what a change costs.
+
+    Args:
+        recipe: The recipe to describe.
+        count: How many resources this group covers, when known.
+
+    What is included here and what is not is decided by consequence, not by length.
+    Safety notes state what a change costs, whether it can be undone, and whether it
+    affects live traffic; someone reading a command must see those without leaving
+    the file, so they stay inline. The reference material -- summary, prerequisites,
+    caveats, documentation link -- answers "what is this policy and why". It is
+    identical for every occurrence, so a run spanning many scopes would repeat it
+    hundreds of times; it is written once in the run's README instead, and the
+    pointer below is what makes that a relocation rather than an omission.
+    """
+    notes: list[str] = [f"POLICY: {recipe.policy_title}", f"Policy ID: {recipe.policy_id}"]
+    if count is not None:
+        notes.append(f"Resources: {count}")
+    if recipe.safety_notes:
+        notes.append("")
+        notes.extend(recipe.safety_notes)
+    notes.append("Summary, caveats and docs: see README.md")
+    return notes
+
+
 __all__ = [
     "TemplateError",
     "UnsafeIdentifierError",
     "comment_block",
     "group_by_policy",
+    "recipe_notes",
     "render_template",
     "template_fields",
+    "tier_banner",
 ]

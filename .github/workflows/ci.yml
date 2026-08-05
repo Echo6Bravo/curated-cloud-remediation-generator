@@ -1,7 +1,7 @@
 name: CI
 
 # Every job here is a BLOCKING gate. This tool emits commands people run against production
-# AWS accounts, so a green CI has to mean something. Actions are pinned to commit SHAs rather
+# cloud accounts, so a green CI has to mean something. Actions are pinned to commit SHAs rather
 # than moving tags -- a tag can be repointed at new code after review.
 on:
   push:
@@ -46,7 +46,7 @@ jobs:
         run: |
           command -v tofu >/dev/null || { echo "::error::tofu missing; HCL validation tests would silently skip"; exit 1; }
           tofu version
-          python -c "import sys; sys.path.insert(0,'src'); from remgen import drift; d=drift.find_model_dir(); print('service models:', d); sys.exit(0 if d else 1)" \
+          python -c "import sys; sys.path.insert(0,'src'); from remgen.providers.aws import drift; d=drift.find_model_dir(); print('service models:', d); sys.exit(0 if d else 1)" \
             || { echo "::error::no AWS service models found; recipe-vs-API test would silently skip"; exit 1; }
       - name: Test suite
         # No -k narrowing, no -x. The tests you did not expect to be affected are the point.
@@ -92,8 +92,8 @@ jobs:
         # byte for byte, which also proves output stays deterministic.
         run: |
           set -euo pipefail
-          remgen generate --findings examples/findings.sample.json \
-            --out ./artifacts --tier caution -v > /tmp/sample-run.txt 2>&1
+          awsremgen generate --findings examples/findings.sample.json \
+            --out ./artifacts --safety-level caution -v > /tmp/sample-run.txt 2>&1
           # The generation timestamp is the only legitimate difference between two runs,
           # and it appears in four distinct forms: the .sh/.tf header, the manifest
           # field, the artifact README's prose line, and the console summary. Missing
@@ -101,22 +101,25 @@ jobs:
           norm() {
             sed -E 's/(# Generated: |"generated_at": "|v[0-9][0-9.]* on |-- generated )[0-9T:+-]+/\1TIMESTAMP/' "$1"
           }
+          # Compared by path relative to the output root, not by basename: artifacts now
+          # live in a per-cloud subdirectory, and two clouds may legitimately produce the
+          # same filename under different directories. Matching on basename would compare
+          # the wrong pair and report a false match.
+          rel() { ( cd "$1" && find . -type f | sed 's|^\./||' | sort ); }
           fail=0
-          for committed in examples/sample-output/*; do
-            name="$(basename "$committed")"
+          for name in $(rel examples/sample-output); do
             fresh="artifacts/$name"
             if [ ! -f "$fresh" ]; then
               echo "::error::the run no longer produces $name, but it is committed under examples/sample-output/"
               fail=1
               continue
             fi
-            if ! diff -u <(norm "$committed") <(norm "$fresh"); then
+            if ! diff -u <(norm "examples/sample-output/$name") <(norm "$fresh"); then
               echo "::error::examples/sample-output/$name is stale. Regenerate it (see examples/README.md)."
               fail=1
             fi
           done
-          for fresh in artifacts/*; do
-            name="$(basename "$fresh")"
+          for name in $(rel artifacts); do
             if [ ! -f "examples/sample-output/$name" ]; then
               echo "::error::the run now produces $name, which is not committed under examples/sample-output/"
               fail=1
@@ -134,9 +137,16 @@ jobs:
         # on a file that reads correctly and does not parse.
         run: |
           set -euo pipefail
-          for f in examples/sample-output/*.sh; do bash -n "$f"; done
+          # Found recursively: artifacts sit under a per-cloud directory. A glob that no
+          # longer matches would make this job pass having checked nothing, so the counts
+          # below are asserted rather than assumed.
+          mapfile -t shells < <(find examples/sample-output -name '*.sh' | sort)
+          mapfile -t tfs < <(find examples/sample-output -name '*.tf' | sort)
+          [ "${#shells[@]}" -gt 0 ] || { echo "::error::no .sh artifacts found to check"; exit 1; }
+          [ "${#tfs[@]}" -gt 0 ] || { echo "::error::no .tf artifacts found to check"; exit 1; }
+          for f in "${shells[@]}"; do bash -n "$f"; done
           i=0
-          for f in examples/sample-output/*.tf; do
+          for f in "${tfs[@]}"; do
             work="/tmp/tfcheck$i"; i=$((i+1))
             mkdir -p "$work"; cp "$f" "$work/main.tf"
             cat > "$work/provider.tf" <<'EOF'
@@ -171,7 +181,9 @@ jobs:
             'exit 0' > /tmp/fakebin/aws
           chmod +x /tmp/fakebin/aws
           : > /tmp/fakebin/calls.log
-          for f in examples/sample-output/*.sh; do
+          mapfile -t shells < <(find examples/sample-output -name '*.sh' | sort)
+          [ "${#shells[@]}" -gt 0 ] || { echo "::error::no .sh artifacts found; the guard check ran on nothing"; exit 1; }
+          for f in "${shells[@]}"; do
             set +e
             PATH=/tmp/fakebin:$PATH bash "$f" >/dev/null 2>&1
             rc=$?
@@ -198,6 +210,14 @@ jobs:
           python-version: "3.13"
       - run: pip install -e '.[dev]'
       - run: ruff check --output-format=github .
+      - name: Formatting is canonical
+        # Enforced so that formatting is never a review topic and cannot drift back.
+        # `ruff format` reads line-length from [tool.ruff] whether or not the project
+        # opts in, so leaving this unenforced meant `--check` was permanently red with
+        # no way for a reader to tell a real finding from a tool the project ignores.
+        # Fix locally with `ruff format .` -- it changes no behaviour and no generated
+        # output; that was verified byte-for-byte against the committed sample.
+        run: ruff format --check --diff .
 
   sast:
     name: SAST (bandit)
@@ -239,7 +259,9 @@ jobs:
               if not pathlib.Path(f).exists():
                   errs.append(f"missing required file: {f}")
           sample = pathlib.Path("examples/sample-output")
-          if not any(sample.glob("*.sh")) or not any(sample.glob("*.tf")):
+          # rglob, not glob: artifacts live under a per-cloud directory now. A
+          # non-recursive check would have reported this directory as empty.
+          if not any(sample.rglob("*.sh")) or not any(sample.rglob("*.tf")):
               errs.append("examples/sample-output/ must contain committed .sh and .tf artifacts")
           for companion in ("README.md", "manifest.json"):
               if not (sample / companion).exists():
@@ -257,9 +279,14 @@ jobs:
               for ref in re.findall(r'\b([A-Z][A-Z0-9_]*\.md)\b', py.read_text()):
                   if not pathlib.Path(ref).exists():
                       errs.append(f"{py}: cites missing {ref}")
-          # 4. Paths the docs point readers at must exist.
-          for src_path in ("src/remgen/sources.py", "src/remgen/recipes/aws_curated.py",
-                           "src/remgen/generators/__init__.py"):
+          # 4. Paths the docs point readers at must exist. Listed explicitly rather than
+          #    scraped from the prose: a restructure renames the module *and* the mention
+          #    of it, and a scraper would follow the docs into agreeing with themselves.
+          for src_path in ("src/remgen/core/sources.py",
+                           "src/remgen/providers/aws/recipes/curated.py",
+                           "src/remgen/core/generators/__init__.py",
+                           "src/remgen/core/provider.py",
+                           "src/remgen/providers/aws/__init__.py"):
               if not pathlib.Path(src_path).exists():
                   errs.append(f"docs reference missing path: {src_path}")
           if errs:
@@ -277,8 +304,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - name: Recipe count and tier split are not stale
-        # The README states a recipe count and a per-tier split. Those are exactly the kind of
+      - name: Recipe count and safety-level split are not stale
+        # The README states a recipe count and a per-level split. Those are exactly the kind of
         # number that silently rots the next time a recipe is added, turning documentation into
         # a confident false claim.
         run: |
@@ -286,7 +313,7 @@ jobs:
           import pathlib, re, sys
           sys.path.insert(0, "src")
           from collections import Counter
-          from remgen.recipes.aws_curated import RECIPES
+          from remgen.providers.aws.recipes.curated import RECIPES
           tiers = Counter(str(getattr(r.safety_tier, "value", r.safety_tier)) for r in RECIPES)
           readme = pathlib.Path("README.md").read_text()
           errs = []

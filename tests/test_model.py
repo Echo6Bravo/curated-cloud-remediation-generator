@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from remgen.model import (
+from remgen.core.model import (
     MAX_TEXT_LENGTH,
     ApiCall,
     CostImpact,

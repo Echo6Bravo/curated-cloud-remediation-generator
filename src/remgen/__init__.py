@@ -1,11 +1,35 @@
-"""Curated AWS remediation generator.
+"""Curated cloud remediation generator.
 
-Turns Tenable Cloud Security AWS policy findings into review-ready remediation
-artifacts: ``aws`` CLI commands and import-aware OpenTofu/Terraform HCL.
+Turns Tenable Cloud Security policy findings into review-ready remediation
+artifacts: vendor CLI commands and import-aware OpenTofu/Terraform HCL.
 
-This package NEVER mutates AWS. It emits text for a human to review and run.
+Layout, and what belongs where:
+
+* :mod:`remgen.core` -- everything that does not depend on a cloud. The finding
+  and recipe model, untrusted-input handling, the safety tiering, the output
+  split, HCL rendering, the per-run README and manifest, and the CLI pipeline.
+  ``core`` must never import from ``providers``: the dependency runs one way, so
+  that a change made for one cloud cannot quietly alter another's output. A test
+  asserts this.
+* :mod:`remgen.providers.<cloud>` -- one package per cloud, holding its recipe
+  set, its drift verification against that cloud's API definitions, its shell
+  generator, and the scope statement its Terraform provider needs. Each exposes a
+  :class:`~remgen.core.provider.Provider` describing itself to the shared
+  pipeline, and ships one console command (``awsremgen``).
+
+There is one command per cloud rather than one command with a ``--cloud`` flag,
+because credentials, recipe coverage and verification are per cloud: a single
+command would imply an estate-wide run that no single credential set can perform.
+
+This package NEVER mutates a cloud environment. It emits text for a human to
+review and run.
 """
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+#: Repository name, used in generated artifact headers so an artifact can be
+#: traced back to its source. Declared once here rather than written into each
+#: generator's header template, where the copies would drift apart.
+PROJECT_NAME = "curated-cloud-remediation-generator"
+
+__all__ = ["PROJECT_NAME", "__version__"]
