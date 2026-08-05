@@ -1,10 +1,13 @@
 {
-  "generator": "remgen (curated-aws-remediation-generator)",
+  "generator": "awsremgen (curated-cloud-remediation-generator)",
   "version": "0.1.0",
-  "generated_at": "2026-08-05T13:30:45+00:00",
+  "generated_at": "2026-08-05T15:39:05+00:00",
   "applied": false,
-  "notes": "Each file targets one AWS account (HCL: one account and region) and must be run with credentials for it. Nothing here has been applied to AWS.",
-  "accounts": [
+  "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
+  "clouds": [
+    "aws"
+  ],
+  "scopes": [
     "111111111111",
     "222222222222"
   ],
@@ -47,9 +50,12 @@
   },
   "files": [
     {
-      "file": "remediate-111111111111-all-regions.sh",
-      "format": "awscli",
-      "account_id": "111111111111",
+      "file": "remediate-aws-111111111111-all-regions.sh",
+      "path": "aws/remediate-aws-111111111111-all-regions.sh",
+      "cloud": "aws",
+      "format": "cli",
+      "scope_id": "111111111111",
+      "scope_noun": "account",
       "region": null,
       "part": null,
       "total_parts": 1,
@@ -62,9 +68,12 @@
       }
     },
     {
-      "file": "remediate-222222222222-all-regions.sh",
-      "format": "awscli",
-      "account_id": "222222222222",
+      "file": "remediate-aws-222222222222-all-regions.sh",
+      "path": "aws/remediate-aws-222222222222-all-regions.sh",
+      "cloud": "aws",
+      "format": "cli",
+      "scope_id": "222222222222",
+      "scope_noun": "account",
       "region": null,
       "part": null,
       "total_parts": 1,
@@ -75,9 +84,12 @@
       }
     },
     {
-      "file": "remediate-111111111111-us-east-1.tf",
+      "file": "remediate-aws-111111111111-us-east-1.tf",
+      "path": "aws/remediate-aws-111111111111-us-east-1.tf",
+      "cloud": "aws",
       "format": "hcl",
-      "account_id": "111111111111",
+      "scope_id": "111111111111",
+      "scope_noun": "account",
       "region": "us-east-1",
       "part": null,
       "total_parts": 1,
@@ -89,9 +101,12 @@
       }
     },
     {
-      "file": "remediate-111111111111-us-west-2.tf",
+      "file": "remediate-aws-111111111111-us-west-2.tf",
+      "path": "aws/remediate-aws-111111111111-us-west-2.tf",
+      "cloud": "aws",
       "format": "hcl",
-      "account_id": "111111111111",
+      "scope_id": "111111111111",
+      "scope_noun": "account",
       "region": "us-west-2",
       "part": null,
       "total_parts": 1,
@@ -101,9 +116,12 @@
       }
     },
     {
-      "file": "remediate-222222222222-us-east-1.tf",
+      "file": "remediate-aws-222222222222-us-east-1.tf",
+      "path": "aws/remediate-aws-222222222222-us-east-1.tf",
+      "cloud": "aws",
       "format": "hcl",
-      "account_id": "222222222222",
+      "scope_id": "222222222222",
+      "scope_noun": "account",
       "region": "us-east-1",
       "part": null,
       "total_parts": 1,

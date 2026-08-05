@@ -11,10 +11,10 @@ import json
 
 import pytest
 
-from remgen import drift
-from remgen.drift import DriftStatus, verify_all, verify_recipe
-from remgen.model import ApiCall, Recipe
-from remgen.recipes import all_recipes
+from remgen.core.model import ApiCall, Recipe
+from remgen.providers.aws import drift
+from remgen.providers.aws.drift import DriftStatus, verify_all, verify_recipe
+from remgen.providers.aws.recipes import all_recipes
 
 
 @pytest.fixture(autouse=True)
@@ -63,9 +63,7 @@ def fake_models(tmp_path, monkeypatch):
         "s3",
         operations={"PutBucketVersioning": {"input": {"shape": "PutBucketVersioningRequest"}}},
         shapes={
-            "PutBucketVersioningRequest": {
-                "members": {"Bucket": {}, "VersioningConfiguration": {}}
-            }
+            "PutBucketVersioningRequest": {"members": {"Bucket": {}, "VersioningConfiguration": {}}}
         },
     )
     monkeypatch.setenv("REMGEN_BOTOCORE_DATA_DIR", str(root))

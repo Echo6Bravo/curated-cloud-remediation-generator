@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from remgen.generators.awscli import render_cli_script
-from remgen.generators.awscli import render_one as render_cli_one
-from remgen.generators.common import TemplateError, comment_block, render_template
-from remgen.generators.hcl import assign_labels, render_hcl
-from remgen.generators.hcl import render_one as render_hcl_one
-from remgen.model import (
+from remgen.core.generators.common import TemplateError, comment_block, render_template
+from remgen.core.generators.hcl import assign_labels, render_hcl
+from remgen.core.generators.hcl import render_one as render_hcl_one
+from remgen.core.layout import Format, plan_units
+from remgen.core.model import (
     ApiCall,
     CostImpact,
     Effort,
@@ -22,7 +21,11 @@ from remgen.model import (
     Recipe,
     UnsafeIdentifierError,
 )
-from remgen.recipes import all_recipes
+from remgen.providers.aws import AWS
+from remgen.providers.aws.hcl import scope_block
+from remgen.providers.aws.recipes import all_recipes
+from remgen.providers.aws.shell import render_cli_script
+from remgen.providers.aws.shell import render_one as render_cli_one
 
 from .test_model import UNSAFE_VALUES
 
@@ -270,9 +273,7 @@ def test_same_name_in_two_accounts_gets_distinct_labels():
     assert len(set(labels.values())) == 2
 
     out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
-    declared = [
-        line for line in out.splitlines() if line.startswith('resource "aws_thing"')
-    ]
+    declared = [line for line in out.splitlines() if line.startswith('resource "aws_thing"')]
     assert len(declared) == 2
     assert len(set(declared)) == 2, "duplicate resource label would fail tofu validate"
 
@@ -335,9 +336,7 @@ def test_import_and_resource_labels_agree_after_disambiguation():
         for line in out.splitlines()
         if "to = aws_thing." in line
     }
-    declared = {
-        line.split('"')[3] for line in out.splitlines() if line.startswith('resource "')
-    }
+    declared = {line.split('"')[3] for line in out.splitlines() if line.startswith('resource "')}
     assert targets == declared
     assert len(targets) == 2
 
@@ -365,8 +364,88 @@ def test_curated_recipes_declare_a_docs_url(recipe):
 @pytest.mark.parametrize("recipe", all_recipes(), ids=lambda r: r.policy_id)
 def test_curated_recipes_are_not_disruptive_in_v1(recipe):
     # v1 promises no availability-affecting remediations. This is the guard.
-    from remgen.model import SafetyTier
+    from remgen.core.model import SafetyTier
 
     assert recipe.safety_tier is not SafetyTier.DISRUPTIVE
     assert recipe.effort is Effort.LOW
     assert not recipe.data_path_impact
+
+
+# ---------------------------------------------------------------------------
+# The AWS scope block -- the provider's contribution to a cloud-neutral renderer
+# ---------------------------------------------------------------------------
+
+
+def _aws_unit(fmt=Format.HCL, **kwargs):
+    pairs = [(_recipe(), _finding(**kwargs))]
+    return plan_units(
+        pairs,
+        fmt,
+        cloud=AWS.cloud,
+        scope_noun=AWS.credential_scope_noun,
+        extension=AWS.shell_extension,
+        provider_is_region_scoped=AWS.hcl_provider_is_region_scoped,
+    )[0]
+
+
+def test_scope_block_names_the_account_the_region_and_the_credential_guard():
+    """``allowed_account_ids`` is the difference between two very different failures.
+
+    Without it a provider pointed at the wrong account does not error -- it imports a
+    same-named resource from the account it *can* see and reconfigures that one. So
+    the guard, and the account and region it guards, must all be present.
+    """
+    block = scope_block(_aws_unit(region="eu-west-1", account_id="111111111111"))
+    assert 'provider "aws"' in block
+    assert 'allowed_account_ids = ["111111111111"]' in block
+    assert 'region              = "eu-west-1"' in block
+    assert "ONE account and ONE region" in block
+
+
+def test_scope_block_is_commented_out_so_it_cannot_duplicate_a_workspaces_provider():
+    # The header tells the reader to drop this file into an existing workspace, which
+    # already declares a provider. An active block there is a "Duplicate provider
+    # configuration" error, so every line of it must be a comment.
+    block = scope_block(_aws_unit())
+    for line in block.splitlines():
+        assert not line.strip() or line.startswith("#"), f"uncommented line: {line!r}"
+
+
+def test_scope_block_is_empty_rather_than_wrong_when_a_unit_spans_regions():
+    # A CLI unit can span regions; an HCL one cannot for AWS. If such a unit ever
+    # reached here, naming an arbitrary region would be worse than naming none.
+    unit = _aws_unit(Format.CLI)
+    assert unit.region is None
+    assert scope_block(unit) == ""
+
+
+def test_render_hcl_includes_the_providers_scope_block_when_given_one():
+    unit = _aws_unit(account_id="111111111111", region="eu-west-1")
+    out = render_hcl(
+        list(unit.pairs),
+        version=VERSION,
+        generated_at=STAMP,
+        unit=unit,
+        command=AWS.command,
+        scope_block=scope_block,
+    )
+    assert 'allowed_account_ids = ["111111111111"]' in out
+    assert AWS.command in out
+
+
+def test_render_hcl_without_a_scope_block_emits_no_scope_statement():
+    # The default exists only for unit tests that render a single block. A file that
+    # silently dropped the statement is the one that gets applied against the wrong
+    # account, so the omission must be the caller's explicit choice.
+    unit = _aws_unit()
+    out = render_hcl(list(unit.pairs), version=VERSION, generated_at=STAMP, unit=unit)
+    assert "SCOPE:" not in out
+
+
+def test_hcl_header_is_cloud_neutral_until_a_provider_fills_it_in():
+    # The shared renderer must not name AWS on its own; if it did, Azure output would
+    # claim to be AWS output and the mistake would be invisible in review.
+    out = render_hcl([(_recipe(), _finding())], version=VERSION, generated_at=STAMP)
+    header = out.split("# ====")[0]
+    assert "AWS" not in header
+    assert "aws" not in header.replace("hashicorp/aws", "")

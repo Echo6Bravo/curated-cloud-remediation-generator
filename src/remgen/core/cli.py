@@ -1,32 +1,42 @@
-"""Command-line interface.
+"""The shared command-line pipeline, parameterized by cloud.
+
+One implementation drives every cloud's command. The steps -- load findings as
+untrusted input, dedupe, pair with recipes, gate by safety level, split by scope,
+render, write, reconcile the counts -- are identical everywhere, and a per-cloud
+copy is how the counts stop reconciling. Everything cloud-specific arrives as a
+:class:`~remgen.core.provider.Provider`, which is also why nothing here imports
+from :mod:`remgen.providers`.
 
 Four subcommands:
 
 * ``generate`` -- turn findings into remediation artifacts. The main command.
 * ``policies`` -- show the policy catalog, what is supported, and what changed.
-* ``verify``   -- check every recipe against the current AWS service models.
+* ``verify``   -- check every recipe against the cloud's current API definitions.
 * ``recipes``  -- show the curated recipe set and its safety classification.
 
 Safety posture of this interface:
 
-* Nothing here calls AWS or Tenable. There is no ``--apply``. The tool writes
-  files; the user runs them. That boundary is the point, so it is not
+* Nothing here calls a cloud API or Tenable. There is no ``--apply``. The tool
+  writes files; the user runs them. That boundary is the point, so it is not
   configurable.
-* ``generate`` emits only ``SAFEST``-tier remediations unless the user opts in
-  with ``--tier``. When remediations are withheld, the count and the exact flag
-  to include them are printed -- a silent cap would read as "nothing else to do".
+* ``generate`` emits only ``SAFEST``-level remediations unless the user opts in
+  with ``--safety-level``. When remediations are withheld, the count and the exact
+  flag to include them are printed -- a silent cap would read as "nothing else to
+  do".
 * Every run reports what it *could not* do: findings with no recipe, records that
   failed validation, and recipes whose API contract could not be verified.
-* Output is split per account, and for HCL per region, because neither format can
-  target more than one AWS account at a time. That split is a correctness
-  requirement rather than an ergonomic one; see :mod:`remgen.layout`.
+* Output is split per cloud and per credential scope, and for HCL per region when
+  the cloud's Terraform provider is region-scoped, because no format can target
+  more than one credential scope at a time. That split is a correctness
+  requirement rather than an ergonomic one; see :mod:`remgen.core.layout`.
 
 Exit codes, so a scheduler can branch on them:
 
 * ``0`` -- success.
 * ``2`` -- usage or input error (bad arguments, unreadable input, unwritable output).
-* ``3`` -- a recipe no longer matches the AWS service model. Nothing was generated.
-* ``4`` -- recipes could not be verified at all (no AWS service models available).
+* ``3`` -- a recipe no longer matches the cloud's API definition. Nothing was
+  generated.
+* ``4`` -- recipes could not be verified at all (no API definitions available).
 * ``5`` -- artifacts were written, but the policy-catalog change detection did not
   run (unreadable or unwritable baseline). Distinct from ``0`` because a check that
   did not run must not be reported as a check that passed.
@@ -40,9 +50,9 @@ import datetime as _dt
 import sys
 from pathlib import Path
 
-from remgen import __version__, drift
-from remgen.artifacts import render_manifest, render_readme
-from remgen.catalog import (
+from remgen import __version__
+from remgen.core.artifacts import render_manifest, render_readme
+from remgen.core.catalog import (
     BaselineState,
     CacheError,
     Snapshot,
@@ -51,37 +61,60 @@ from remgen.catalog import (
     load_snapshot,
     save_snapshot,
 )
-from remgen.generators import render_cli_script, render_hcl
-from remgen.layout import (
+from remgen.core.drift import DriftStatus
+from remgen.core.generators import render_hcl
+from remgen.core.layout import (
     DEFAULT_MAX_PER_FILE,
     Format,
     describe_layout,
     plan_units,
 )
-from remgen.model import Finding, Recipe, SafetyTier
-from remgen.recipes import all_recipes, get
-from remgen.sources import JsonFileSource, LoadResult, SourceError
+from remgen.core.model import Finding, Recipe, SafetyTier
+from remgen.core.provider import Provider
+from remgen.core.sources import JsonFileSource, LoadResult, SourceError
 
-_TIER_ORDER = {SafetyTier.SAFEST: 0, SafetyTier.CAUTION: 1, SafetyTier.DISRUPTIVE: 2}
+_LEVEL_ORDER = {SafetyTier.SAFEST: 0, SafetyTier.CAUTION: 1, SafetyTier.DISRUPTIVE: 2}
+
+#: ``--safety-level`` value -> the levels it admits. Cumulative: each level includes
+#: everything less risky, because "I accept irreversible changes" does not mean "and
+#: not the safe ones". Declared as data so the flag's help text, the withheld-count
+#: advice and the gate itself cannot disagree.
+_LEVELS: dict[str, frozenset[SafetyTier]] = {
+    "safest": frozenset({SafetyTier.SAFEST}),
+    "caution": frozenset({SafetyTier.SAFEST, SafetyTier.CAUTION}),
+    "all": frozenset(_LEVEL_ORDER),
+}
+
+#: ``--format`` value -> the format it selects, plus the ``all`` alias. Both formats
+#: are the default because they are complementary rather than alternative: the script
+#: is for a one-off fix, the HCL for an estate already under IaC.
+_FORMATS: dict[str, tuple[Format, ...]] = {
+    "cli": (Format.CLI,),
+    "hcl": (Format.HCL,),
+    "all": (Format.CLI, Format.HCL),
+}
 
 _EPILOG = """\
 examples:
   # See what is supported before doing anything
-  remgen recipes
+  {command} recipes
 
-  # Confirm every recipe still matches the current AWS API definitions
-  remgen verify
+  # Confirm every recipe still matches the current {display} API definitions
+  {command} verify
 
   # Generate remediations from an exported findings file
-  remgen generate --findings findings.json --out ./artifacts
+  {command} generate --findings findings.json --out ./artifacts
+
+  # Emit only the shell script, or only the OpenTofu/Terraform configuration
+  {command} generate --findings findings.json --out ./artifacts --format cli
 
   # Include remediations that carry a commitment (irreversible, cost-scaled)
-  remgen generate --findings findings.json --out ./artifacts --tier caution
+  {command} generate --findings findings.json --out ./artifacts --safety-level caution
 
   # Track catalog changes; new policies are reported, never auto-remediated
-  remgen policies --catalog policies.json
+  {command} policies --catalog policies.json
 
-This tool never modifies AWS. It writes files for you to review and run.
+This tool never modifies {display}. It writes files for you to review and run.
 """
 
 
@@ -101,6 +134,43 @@ def _emit(lines: list[str], stream=None) -> None:
         print(line, file=target)
 
 
+def _parse_formats(raw: str) -> tuple[Format, ...]:
+    """Parse a ``--format`` value into the formats to emit.
+
+    Accepts a comma-separated list (``cli,hcl``) as well as a single name and the
+    ``all`` alias, so the flag reads the same whether one or both are wanted. A list
+    rather than a boolean per format on purpose: a pair of booleans has an ambiguous
+    "neither passed" state, and per-format flag *names* would not survive a second
+    cloud -- ``--aws-cli`` beside ``--gcloud`` says nothing a command already scoped
+    to one cloud does not.
+
+    Raises:
+        ValueError: On an unknown or empty name, naming what was given and what is
+            accepted. Raised rather than silently dropping the token, because a
+            typo that quietly emits half the output looks like a tool that lost
+            findings.
+    """
+    names = [part.strip().lower() for part in raw.split(",")]
+    if any(not name for name in names):
+        raise ValueError(
+            f"--format {raw!r}: empty format name. Give a comma-separated list of "
+            f"{', '.join(sorted(_FORMATS))}."
+        )
+    selected: list[Format] = []
+    for name in names:
+        if name not in _FORMATS:
+            raise ValueError(
+                f"--format {raw!r}: unknown format {name!r}. Choose from "
+                f"{', '.join(sorted(_FORMATS))}."
+            )
+        for fmt in _FORMATS[name]:
+            if fmt not in selected:
+                selected.append(fmt)
+    # Ordered canonically rather than as typed, so `--format hcl,cli` and
+    # `--format cli,hcl` produce byte-identical runs.
+    return tuple(fmt for fmt in (Format.CLI, Format.HCL) if fmt in selected)
+
+
 # ---------------------------------------------------------------------------
 # generate
 # ---------------------------------------------------------------------------
@@ -109,7 +179,7 @@ def _emit(lines: list[str], stream=None) -> None:
 def _dedupe(
     findings: tuple[Finding, ...],
 ) -> tuple[tuple[Finding, ...], int]:
-    """Collapse findings identical in policy, resource, region and account.
+    """Collapse findings identical in policy, resource, region and scope.
 
     Exports legitimately repeat a finding -- the same violation observed in two
     scans, or a record joined across views. Emitting the remediation twice means
@@ -134,20 +204,20 @@ def _dedupe(
 
 
 def _pair_findings(
-    findings: tuple[Finding, ...],
+    findings: tuple[Finding, ...], provider: Provider
 ) -> tuple[list[tuple[Recipe, Finding]], list[Finding]]:
     """Split findings into those with a recipe and those without."""
     matched: list[tuple[Recipe, Finding]] = []
     unmatched: list[Finding] = []
     for finding in findings:
-        recipe = get(finding.policy_id)
+        recipe = provider.get_recipe(finding.policy_id)
         if recipe is None:
             unmatched.append(finding)
         else:
             matched.append((recipe, finding))
     matched.sort(
         key=lambda p: (
-            _TIER_ORDER[p[0].safety_tier],
+            _LEVEL_ORDER[p[0].safety_tier],
             p[0].policy_title,
             p[1].account_id,
             p[1].region,
@@ -179,7 +249,7 @@ def _clip(text: str, limit: int = 160) -> str:
 #: prose was hoisted out of the per-finding blocks. Re-measure if the generators'
 #: comment structure changes; this only *predicts* size, and the run summary always
 #: reports actual bytes.
-_BYTES_PER_REMEDIATION = {Format.AWSCLI: 338, Format.HCL: 975}
+_BYTES_PER_REMEDIATION = {Format.CLI: 338, Format.HCL: 975}
 
 
 def _human_bytes(count: int) -> str:
@@ -192,14 +262,18 @@ def _human_bytes(count: int) -> str:
     return f"{count} B"  # pragma: no cover -- unreachable, GB branch is terminal
 
 
-def estimate_output_bytes(count: int) -> int:
-    """Estimate total output size for ``count`` remediations, across both formats.
+def estimate_output_bytes(
+    count: int, formats: tuple[Format, ...] = (Format.CLI, Format.HCL)
+) -> int:
+    """Estimate total output size for ``count`` remediations in ``formats``.
 
     Cheap on purpose: a multiplication, not a trial render. It exists so a run that
     is about to produce hundreds of megabytes says so up front rather than after the
-    fact, which is when a surprised user has already waited for it.
+    fact, which is when a surprised user has already waited for it. Scoped to the
+    selected formats, so a ``--format cli`` run is not warned about bytes it will
+    never write.
     """
-    return count * sum(_BYTES_PER_REMEDIATION.values())
+    return count * sum(_BYTES_PER_REMEDIATION[fmt] for fmt in formats)
 
 
 def _report_load(result: LoadResult) -> None:
@@ -213,10 +287,16 @@ def _report_load(result: LoadResult) -> None:
         print(f"  ... and {len(result.rejections) - 20} more")
 
 
-def cmd_generate(args: argparse.Namespace) -> int:
+def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     if args.max_per_file < 0:
         print("error: --max-per-file must be 0 or greater", file=sys.stderr)
         return 2
+    try:
+        formats = _parse_formats(args.format)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     source = JsonFileSource(
         findings_path=args.findings,
         policies_path=args.catalog,
@@ -232,70 +312,75 @@ def cmd_generate(args: argparse.Namespace) -> int:
         return 0
 
     unique_findings, duplicates = _dedupe(result.findings)
-    matched, unmatched = _pair_findings(unique_findings)
+    matched, unmatched = _pair_findings(unique_findings, provider)
 
     # Verify the API contract before emitting anything that relies on it. A
     # recipe whose operation has changed shape must not be rendered as if valid.
-    drift_results = {r.policy_id: r for r in drift.verify_all(all_recipes())}
-    bad = {
-        pid
-        for pid, res in drift_results.items()
-        if res.status not in (drift.DriftStatus.OK, drift.DriftStatus.UNAVAILABLE)
-    }
+    drift_results = {r.policy_id: r for r in provider.verify_recipes(provider.all_recipes())}
+    bad = {pid for pid, res in drift_results.items() if res.checked and not res.ok}
     if bad:
         print(
-            f"\nerror: {len(bad)} recipe(s) no longer match the AWS service model. "
-            f"Refusing to generate. Run 'remgen verify' for detail.",
+            f"\nerror: {len(bad)} recipe(s) no longer match the {provider.display_name} "
+            f"service model. Refusing to generate. Run "
+            f"'{provider.command} verify' for detail.",
             file=sys.stderr,
         )
         return 3
-    unverified = [
-        res for res in drift_results.values() if res.status is drift.DriftStatus.UNAVAILABLE
-    ]
+    unverified = [res for res in drift_results.values() if not res.checked]
 
-    allowed = {SafetyTier.SAFEST}
-    if args.tier == "caution":
-        allowed.add(SafetyTier.CAUTION)
-    elif args.tier == "all":
-        allowed |= {SafetyTier.CAUTION, SafetyTier.DISRUPTIVE}
-
+    allowed = _LEVELS[args.safety_level]
     selected = [(r, f) for r, f in matched if r.safety_tier in allowed]
     withheld = [(r, f) for r, f in matched if r.safety_tier not in allowed]
 
     # Forecast size before doing the work, so a run that will produce hundreds of
     # megabytes says so now rather than after the user has waited for it. Warn only
     # past a threshold; an unconditional size line is noise on a normal run.
-    forecast = estimate_output_bytes(len(selected))
+    forecast = estimate_output_bytes(len(selected), formats)
     if forecast > 50 * 1024**2:
         print(
             f"\n  Note: {len(selected)} remediations will produce roughly "
-            f"{_human_bytes(forecast)} across both formats.\n"
-            f"  Most of that is the per-remediation comment header. Narrow the input "
-            f"or lower\n  --max-per-file if you want smaller files to review."
+            f"{_human_bytes(forecast)}.\n"
+            f"  Most of that is the per-remediation comment header. Narrow the input, "
+            f"select one\n  --format, or lower --max-per-file if you want smaller files "
+            f"to review."
         )
 
     out_dir: Path = args.out
     generated_at = _now()
 
-    # Output is split by scope before rendering. Account is a hard boundary for
-    # both formats and region is a hard boundary for HCL, because neither an
-    # ambient-credential shell script nor an AWS provider configuration can
-    # address more than one account at a time. See remgen.layout.
-    cli_units = plan_units(selected, Format.AWSCLI, max_per_file=args.max_per_file)
-    hcl_units = plan_units(
-        [(r, f) for r, f in selected if r.hcl is not None],
-        Format.HCL,
-        max_per_file=args.max_per_file,
+    # Output is split by scope before rendering. Cloud and credential scope are hard
+    # boundaries for both formats, and region is one for HCL when this cloud's
+    # Terraform provider is region-scoped, because neither an ambient-credential
+    # shell script nor a provider configuration can address more than one credential
+    # scope at a time. See remgen.core.layout.
+    def _plan(fmt: Format, pairs: list[tuple[Recipe, Finding]]) -> list:
+        return plan_units(
+            pairs,
+            fmt,
+            cloud=provider.cloud,
+            max_per_file=args.max_per_file,
+            provider_is_region_scoped=provider.hcl_provider_is_region_scoped,
+            extension=provider.shell_extension,
+            scope_noun=provider.credential_scope_noun,
+        )
+
+    cli_units = _plan(Format.CLI, selected) if Format.CLI in formats else []
+    hcl_units = (
+        _plan(Format.HCL, [(r, f) for r, f in selected if r.hcl is not None])
+        if Format.HCL in formats
+        else []
     )
 
     # Rendering is pure, so do it before touching the filesystem: a template error
     # then fails without having written a half-populated output directory.
-    # (filename, text, make_executable) -- the companion files below are not tied to
-    # a single output unit, so the write loop keys off names rather than units.
+    # (relative path, text, make_executable) -- the companion files below are not
+    # tied to a single output unit, so the write loop keys off paths rather than
+    # units. Artifact paths include the cloud directory; the companion files sit at
+    # the top so one README and one index cover the whole run.
     rendered: list[tuple[str, str, bool]] = [
         (
-            unit.filename,
-            render_cli_script(
+            unit.relative_path,
+            provider.render_shell(
                 list(unit.pairs),
                 version=__version__,
                 generated_at=generated_at,
@@ -307,12 +392,14 @@ def cmd_generate(args: argparse.Namespace) -> int:
     ]
     rendered.extend(
         (
-            unit.filename,
+            unit.relative_path,
             render_hcl(
                 list(unit.pairs),
                 version=__version__,
                 generated_at=generated_at,
                 unit=unit,
+                command=provider.command,
+                scope_block=provider.hcl_scope_block,
             ),
             False,
         )
@@ -320,7 +407,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     )
 
     # The shared instructions and the index, written once per run rather than
-    # repeated in every artifact. See remgen.artifacts for why.
+    # repeated in every artifact. See remgen.core.artifacts for why.
     all_units = cli_units + hcl_units
     if all_units:
         rendered.append(
@@ -328,6 +415,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 "README.md",
                 render_readme(
                     all_units,
+                    provider=provider,
                     version=__version__,
                     generated_at=generated_at,
                     count=len(selected),
@@ -339,7 +427,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
             (
                 "manifest.json",
                 render_manifest(
-                    all_units, version=__version__, generated_at=generated_at
+                    all_units,
+                    version=__version__,
+                    generated_at=generated_at,
+                    command=provider.command,
                 ),
                 False,
             )
@@ -350,6 +441,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         for name, text, executable in rendered:
             path = out_dir / name
+            # The cloud segment means artifact paths have a parent to create. The
+            # provider's cloud id is validated as a single alphanumeric segment, so
+            # this cannot escape out_dir.
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
             if executable:
                 path.chmod(0o755)
@@ -367,7 +462,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     # no-recipe. A summary whose numbers do not
     # add up invites the reader to assume the missing ones were fine.
     total_in = len(result.findings) + len(result.rejections)
-    print(f"\nremgen {__version__} -- generated {generated_at}")
+    print(f"\n{provider.command} {__version__} -- generated {generated_at}")
     print(f"\n  Records read:         {total_in}")
     print(f"    usable findings:    {len(result.findings)}")
     if result.rejections:
@@ -377,11 +472,12 @@ def cmd_generate(args: argparse.Namespace) -> int:
         print(f"    distinct findings:  {len(unique_findings)}")
     print(f"  Remediations written: {len(selected)}")
     if withheld:
-        print(f"    withheld by tier:   {len(withheld)}")
+        print(f"    withheld by level:  {len(withheld)}")
     if unmatched:
         print(f"    no recipe:          {len(unmatched)}")
     total_bytes = sum(size for _, size in written)
     print(f"\n  Output: {out_dir}  ({len(written)} file(s), {_human_bytes(total_bytes)})")
+    print(f"  Formats: {', '.join(fmt.value for fmt in formats)}")
     _emit(describe_layout(cli_units))
     _emit(describe_layout(hcl_units))
     if written and (args.verbose or len(written) <= 8):
@@ -390,24 +486,40 @@ def cmd_generate(args: argparse.Namespace) -> int:
     elif written:
         print(f"    (use -v to list all {len(written)} files)")
 
-    incomplete = [r for r, _ in selected if r.hcl is not None and not r.hcl.is_complete]
-    if incomplete:
-        print(
-            f"\n  Note: {len(incomplete)} HCL block(s) contain TODO placeholders for "
-            f"provider-required\n  arguments that findings do not carry. Complete them "
-            f"before applying."
-        )
+    # Only meaningful when HCL was actually emitted: a --format cli run has no
+    # resource blocks to complete, so the note would send the reader looking for
+    # TODOs that are not there.
+    if hcl_units:
+        incomplete = [r for r, _ in selected if r.hcl is not None and not r.hcl.is_complete]
+        if incomplete:
+            print(
+                f"\n  Note: {len(incomplete)} HCL block(s) contain TODO placeholders for "
+                f"provider-required\n  arguments that findings do not carry. Complete "
+                f"them before applying."
+            )
+
+    if Format.HCL in formats and Format.CLI not in formats:
+        cli_only = [(r, f) for r, f in selected if r.hcl is None]
+        if cli_only:
+            print(
+                f"\n  Note: {len(cli_only)} remediation(s) have no IaC equivalent and "
+                f"were not\n  written, because --format excluded the CLI script. "
+                f"Add 'cli' to include them."
+            )
 
     if withheld:
-        by_tier: dict[SafetyTier, int] = {}
+        by_level: dict[SafetyTier, int] = {}
         for recipe, _ in withheld:
-            by_tier[recipe.safety_tier] = by_tier.get(recipe.safety_tier, 0) + 1
-        ordered = sorted(by_tier.items(), key=lambda kv: _TIER_ORDER[kv[0]])
+            by_level[recipe.safety_tier] = by_level.get(recipe.safety_tier, 0) + 1
+        ordered = sorted(by_level.items(), key=lambda kv: _LEVEL_ORDER[kv[0]])
         detail = ", ".join(f"{n} {t.value}" for t, n in ordered)
-        print(f"\n  Withheld by safety tier: {len(withheld)} ({detail})")
-        print(f"  These are excluded because --tier is '{args.tier}'. To include them:")
-        print("    --tier caution   reversible-with-commitment, or cost-scaled changes")
-        print("    --tier all       also includes changes that can affect availability")
+        print(f"\n  Withheld by safety level: {len(withheld)} ({detail})")
+        print(
+            f"  These are excluded because --safety-level is "
+            f"'{args.safety_level}'. To include them:"
+        )
+        print("    --safety-level caution   reversible-with-commitment, or cost-scaled")
+        print("    --safety-level all       also changes that can affect availability")
 
     if unmatched:
         distinct = sorted({f.policy_id for f in unmatched})
@@ -423,17 +535,20 @@ def cmd_generate(args: argparse.Namespace) -> int:
     if unverified:
         print(
             f"\n  Warning: {len(unverified)} recipe(s) could not be verified against the "
-            f"AWS\n  service model ({unverified[0].detail})"
+            f"{provider.display_name}\n  service model ({unverified[0].detail})"
         )
 
     _report_load(result)
 
     degraded = False
     if result.policies:
-        lines, degraded = _catalog_report(result, args)
+        lines, degraded = _catalog_report(result, args, provider)
         _emit(lines)
 
-    print("\nReview both files before running anything. This tool made no AWS changes.")
+    print(
+        f"\nReview the output before running anything. This tool made no "
+        f"{provider.display_name} changes."
+    )
     # The artifacts were written, so this is not a failure -- but the catalog
     # change detection did not run, and a scheduler must be able to see that.
     return 5 if degraded else 0
@@ -445,7 +560,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 
 def _catalog_report(
-    result: LoadResult, args: argparse.Namespace
+    result: LoadResult, args: argparse.Namespace, provider: Provider
 ) -> tuple[list[str], bool]:
     """Diff the catalog against the cached snapshot and describe the result.
 
@@ -461,7 +576,7 @@ def _catalog_report(
     lines = ["", *diff.summary_lines()]
     degraded = state is BaselineState.UNREADABLE
 
-    supported = {r.policy_id for r in all_recipes()}
+    supported = {r.policy_id for r in provider.all_recipes()}
     covered = sum(1 for p in result.policies if p.policy_id in supported)
     lines.append(
         f"  Recipes available for {covered} of {len(result.policies)} policies "
@@ -470,29 +585,22 @@ def _catalog_report(
 
     if not args.no_save:
         try:
-            path = save_snapshot(
-                Snapshot(policies=result.policies, captured_at=_now()), cache_dir
-            )
+            path = save_snapshot(Snapshot(policies=result.policies, captured_at=_now()), cache_dir)
             lines.append(f"  Snapshot saved: {path}")
         except CacheError as exc:
             # Not fatal to the artifacts already produced, but it does mean the
             # next run has no baseline and will silently report no changes.
             lines.append(f"  WARNING: {exc}")
             lines.append(
-                "  The baseline was not updated, so the next run cannot detect "
-                "policy changes."
+                "  The baseline was not updated, so the next run cannot detect policy changes."
             )
             degraded = True
     return lines, degraded
 
 
-def cmd_policies(args: argparse.Namespace) -> int:
+def cmd_policies(args: argparse.Namespace, provider: Provider) -> int:
     if args.catalog is None:
-        print(
-            "error: --catalog is required. Export the AWS policy catalog from Tenable\n"
-            "Cloud Security as JSON (an array of {id, title, category} objects).",
-            file=sys.stderr,
-        )
+        print(f"error: --catalog is required. {provider.catalog_export_hint}", file=sys.stderr)
         return 2
     try:
         result = JsonFileSource(policies_path=args.catalog).load()
@@ -500,11 +608,11 @@ def cmd_policies(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    lines, degraded = _catalog_report(result, args)
+    lines, degraded = _catalog_report(result, args, provider)
     _emit(lines)
 
     if args.unsupported:
-        supported = {r.policy_id for r in all_recipes()}
+        supported = {r.policy_id for r in provider.all_recipes()}
         missing = [p for p in result.policies if p.policy_id not in supported]
         print(f"\n{len(missing)} policy/policies without a recipe:")
         for policy in sorted(missing, key=lambda p: (p.category, p.title)):
@@ -519,20 +627,20 @@ def cmd_policies(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
-    recipes = all_recipes()
-    results = drift.verify_all(recipes)
-    source = drift.model_source_description()
+def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
+    recipes = provider.all_recipes()
+    results = provider.verify_recipes(recipes)
+    source = provider.describe_model_source()
 
-    print(f"Verifying {len(recipes)} recipe(s) against AWS service models.")
+    print(f"Verifying {len(recipes)} recipe(s) against {provider.display_name} service models.")
     print(f"Model source: {source}\n")
 
     failures = 0
     unavailable = 0
     for res in results:
-        if res.status is drift.DriftStatus.OK:
+        if res.ok:
             mark, note = "ok  ", f"api {res.api_version}"
-        elif res.status is drift.DriftStatus.UNAVAILABLE:
+        elif not res.checked:
             mark, note = "?   ", res.detail
             unavailable += 1
         else:
@@ -540,21 +648,28 @@ def cmd_verify(args: argparse.Namespace) -> int:
             failures += 1
         target = f"{res.service}.{res.operation}"
         print(f"  {mark} {target:<34} {note}")
-        if res.status not in (drift.DriftStatus.OK, drift.DriftStatus.UNAVAILABLE):
+        if res.checked and not res.ok:
             print(f"       policy: {res.policy_title}")
 
     print()
     if unavailable:
         # An unrunnable check is reported as unrunnable, never as a pass.
         print(
-            f"{unavailable} recipe(s) could not be checked: no AWS service models found.\n"
-            "Install AWS CLI v2, or set REMGEN_BOTOCORE_DATA_DIR to a botocore data dir."
+            f"{unavailable} recipe(s) could not be checked: no "
+            f"{provider.display_name} service models found."
         )
+        if provider.models_unavailable_hint:
+            print(provider.models_unavailable_hint)
         return 4
     if failures:
-        print(f"{failures} recipe(s) no longer match the AWS API. Do not generate until fixed.")
+        print(
+            f"{failures} recipe(s) no longer match the {provider.display_name} API. "
+            f"Do not generate until fixed."
+        )
         return 3
-    print(f"All {len(results)} recipe(s) match the current AWS API definitions.")
+    print(
+        f"All {len(results)} recipe(s) match the current {provider.display_name} API definitions."
+    )
     return 0
 
 
@@ -563,8 +678,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def cmd_recipes(args: argparse.Namespace) -> int:
-    recipes = all_recipes()
+def cmd_recipes(args: argparse.Namespace, provider: Provider) -> int:
+    recipes = provider.all_recipes()
     print(f"{len(recipes)} curated recipe(s). Coverage is intentionally partial.\n")
     for tier in (SafetyTier.SAFEST, SafetyTier.CAUTION, SafetyTier.DISRUPTIVE):
         in_tier = [r for r in recipes if r.safety_tier is tier]
@@ -579,7 +694,7 @@ def cmd_recipes(args: argparse.Namespace) -> int:
             for note in recipe.safety_notes:
                 print(f"    ! {note}")
         print()
-    print("Default 'generate' emits SAFEST only; use --tier to include more.")
+    print("Default 'generate' emits SAFEST only; use --safety-level to include more.")
     return 0
 
 
@@ -588,17 +703,28 @@ def cmd_recipes(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(provider: Provider) -> argparse.ArgumentParser:
+    """Build the parser for one cloud's command.
+
+    Every user-visible string that names a cloud or a command comes from
+    ``provider``, so ``--help`` describes the command the user actually typed and a
+    copied example runs as written.
+    """
     parser = argparse.ArgumentParser(
-        prog="remgen",
+        prog=provider.command,
         description=(
-            "Generate reviewable AWS remediation artifacts from Tenable Cloud Security "
-            "findings. Curated, best-effort, and safety-tiered. Never modifies AWS."
+            f"Generate reviewable {provider.display_name} remediation artifacts from "
+            f"Tenable Cloud Security findings. Curated, best-effort, and "
+            f"safety-tiered. Never modifies {provider.display_name}."
         ),
-        epilog=_EPILOG,
+        epilog=_EPILOG.format(command=provider.command, display=provider.display_name),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"remgen {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{provider.command} {__version__}",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_cache_args(p: argparse.ArgumentParser) -> None:
@@ -607,8 +733,7 @@ def build_parser() -> argparse.ArgumentParser:
             type=Path,
             default=None,
             metavar="DIR",
-            help="where to store the policy-catalog snapshot "
-            f"(default: {default_cache_dir()})",
+            help=f"where to store the policy-catalog snapshot (default: {default_cache_dir()})",
         )
         p.add_argument(
             "--no-save",
@@ -616,10 +741,14 @@ def build_parser() -> argparse.ArgumentParser:
             help="do not update the snapshot (useful in CI, or for a dry comparison)",
         )
 
+    noun = provider.credential_scope_noun
     gen = sub.add_parser(
         "generate",
         help="generate remediation artifacts from findings",
-        description="Generate an aws CLI script and import-aware OpenTofu/Terraform HCL.",
+        description=(
+            f"Generate a {provider.display_name} CLI script and import-aware "
+            f"OpenTofu/Terraform HCL."
+        ),
     )
     gen.add_argument(
         "--findings",
@@ -636,13 +765,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="output directory (default: ./artifacts)",
     )
     gen.add_argument(
-        "--tier",
-        choices=("safest", "caution", "all"),
+        "--format",
+        default="all",
+        metavar="LIST",
+        help=(
+            "which output formats to write, comma-separated: cli (a "
+            f"{provider.display_name} CLI shell script), hcl "
+            "(import-aware OpenTofu/Terraform configuration), or all "
+            "(default). Both are written by default because they serve different "
+            "situations: the script for a one-off fix, the HCL for resources already "
+            "under IaC. Choosing 'hcl' alone omits policies that have no IaC "
+            "equivalent; the count is reported."
+        ),
+    )
+    gen.add_argument(
+        "--safety-level",
+        choices=tuple(_LEVELS),
         default="safest",
         help=(
-            "which safety tiers to emit. safest (default): reversible, no data-path "
-            "impact, no usage-scaled cost. caution: also irreversible or cost-scaled "
-            "changes. all: also changes that can affect availability."
+            "the most risk to accept; each level includes the safer ones. safest "
+            "(default): reversible, no data-path impact, no usage-scaled cost. "
+            "caution: also irreversible or cost-scaled changes. all: also changes "
+            "that can affect availability."
         ),
     )
     gen.add_argument(
@@ -660,9 +804,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "soft cap on remediations per output file, for reviewability "
             f"(default: {DEFAULT_MAX_PER_FILE}; 0 disables size-based splitting). "
-            "Output is always split by account, and HCL also by region, because "
-            "neither format can target more than one account at a time -- that "
-            "split is not affected by this flag."
+            f"Output is always split by cloud and by {noun}, and HCL also by region, "
+            f"because neither format can target more than one {noun} at a time -- "
+            "that split is not affected by this flag."
         ),
     )
     gen.add_argument(
@@ -682,18 +826,17 @@ def build_parser() -> argparse.ArgumentParser:
     pol.add_argument(
         "--catalog", type=Path, required=True, metavar="FILE", help="policy catalog JSON"
     )
-    pol.add_argument(
-        "--unsupported", action="store_true", help="list every policy with no recipe"
-    )
+    pol.add_argument("--unsupported", action="store_true", help="list every policy with no recipe")
     add_cache_args(pol)
     pol.set_defaults(func=cmd_policies)
 
     ver = sub.add_parser(
         "verify",
-        help="check recipes against the current AWS service models",
+        help=f"check recipes against the current {provider.display_name} service models",
         description=(
-            "Verify that every recipe's API operation and parameters still exist in the "
-            "AWS service models. Run this before trusting generated output."
+            f"Verify that every recipe's API operation and parameters still exist in "
+            f"the {provider.display_name} service models. Run this before trusting "
+            f"generated output."
         ),
     )
     ver.set_defaults(func=cmd_verify)
@@ -707,11 +850,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
+def main(provider: Provider, argv: list[str] | None = None) -> int:
+    """Run one cloud's command. Each provider's console script calls this."""
+    parser = build_parser(provider)
     args = parser.parse_args(argv)
     try:
-        return int(args.func(args))
+        return int(args.func(args, provider))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -729,5 +873,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+__all__ = [
+    "DriftStatus",
+    "build_parser",
+    "cmd_generate",
+    "cmd_policies",
+    "cmd_recipes",
+    "cmd_verify",
+    "estimate_output_bytes",
+    "main",
+]

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from remgen.model import Finding, Policy, UnsafeIdentifierError
+from remgen.core.model import Finding, Policy, UnsafeIdentifierError
 
 #: Keys accepted for each Finding field, in priority order. Real exports differ
 #: in casing and naming between API versions and CSV/JSON paths, so a small
@@ -108,14 +108,10 @@ def parse_findings(records: list) -> tuple[tuple[Finding, ...], tuple[Rejection,
     rejections: list[Rejection] = []
     for i, record in enumerate(records):
         if not isinstance(record, dict):
-            rejections.append(
-                Rejection(index=i, reason="not a JSON object", raw=_truncate(record))
-            )
+            rejections.append(Rejection(index=i, reason="not a JSON object", raw=_truncate(record)))
             continue
         values = {f: _pick(record, a) for f, a in _FINDING_ALIASES.items()}
-        missing = [
-            f for f in ("policy_id", "resource_id", "region", "account_id") if not values[f]
-        ]
+        missing = [f for f in ("policy_id", "resource_id", "region", "account_id") if not values[f]]
         if missing:
             rejections.append(
                 Rejection(
@@ -139,15 +135,11 @@ def parse_policies(records: list) -> tuple[tuple[Policy, ...], tuple[Rejection, 
     seen: set[str] = set()
     for i, record in enumerate(records):
         if not isinstance(record, dict):
-            rejections.append(
-                Rejection(index=i, reason="not a JSON object", raw=_truncate(record))
-            )
+            rejections.append(Rejection(index=i, reason="not a JSON object", raw=_truncate(record)))
             continue
         values = {f: _pick(record, a) for f, a in _POLICY_ALIASES.items()}
         if not values["policy_id"]:
-            rejections.append(
-                Rejection(index=i, reason="missing policy id", raw=_truncate(record))
-            )
+            rejections.append(Rejection(index=i, reason="missing policy id", raw=_truncate(record)))
             continue
         if values["policy_id"] in seen:
             rejections.append(
@@ -196,9 +188,7 @@ class JsonFileSource:
             for candidate in (key, "items", "data", "results"):
                 if isinstance(payload.get(candidate), list):
                     return payload[candidate]
-        raise SourceError(
-            f"{path}: expected a JSON array, or an object with a {key!r} array"
-        )
+        raise SourceError(f"{path}: expected a JSON array, or an object with a {key!r} array")
 
     def load(self) -> LoadResult:
         policies: tuple[Policy, ...] = ()
