@@ -32,6 +32,20 @@ All notable changes to this project are documented here. The format follows
 - Whether region is a hard boundary for HCL is now declared per provider rather than assumed. It is
   true for `hashicorp/aws`, where region is set on the provider; `azurerm` takes `location` per
   resource and would not split the same way.
+- `ruff format` is now adopted and enforced in CI. `ruff check` (linter) and `ruff format`
+  (autoformatter) are separate tools sharing one binary, and only the first was being run — but
+  `ruff format` reads `line-length` from `[tool.ruff]` whether a project opts in or not, so it
+  already had an opinion and 14 of 38 files disagreed with it. That left `--check` permanently red
+  with nothing recording whether it was a real finding or a tool the project ignored. Verified not
+  to touch generated output: a regenerated sample diffs byte-for-byte, including the transcript.
+- `recipe_notes(full=True)` and the `docs_label` chain that fed it (`Provider.docs_label` through
+  `render_hcl` and `hcl_recipe_notes`) are removed — all unreachable, since `docs_label` was read
+  only inside `if full:`. Replaced by a test asserting the summary, prerequisites, caveats and docs
+  link appear in the run README and **not** in the `.sh`/`.tf`. `full=True` was the switch that
+  would have undone the artifact-size work with every other test still green, so the guard replaces
+  it rather than the deletion just removing it. One assertion that looked like it covered this
+  (`"AWS docs" in out or not any(r.docs_url ...)`) was passing vacuously on a fixture with no
+  `docs_url`.
 
 ### Added
 - **`--format`** selects which output formats to write, as a comma-separated list (`cli`, `hcl`,
