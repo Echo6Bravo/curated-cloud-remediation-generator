@@ -316,14 +316,8 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
 
     # Verify the API contract before emitting anything that relies on it. A
     # recipe whose operation has changed shape must not be rendered as if valid.
-    drift_results = {
-        r.policy_id: r for r in provider.verify_recipes(provider.all_recipes())
-    }
-    bad = {
-        pid
-        for pid, res in drift_results.items()
-        if res.checked and not res.ok
-    }
+    drift_results = {r.policy_id: r for r in provider.verify_recipes(provider.all_recipes())}
+    bad = {pid for pid, res in drift_results.items() if res.checked and not res.ok}
     if bad:
         print(
             f"\nerror: {len(bad)} recipe(s) no longer match the {provider.display_name} "
@@ -497,9 +491,7 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     # resource blocks to complete, so the note would send the reader looking for
     # TODOs that are not there.
     if hcl_units:
-        incomplete = [
-            r for r, _ in selected if r.hcl is not None and not r.hcl.is_complete
-        ]
+        incomplete = [r for r, _ in selected if r.hcl is not None and not r.hcl.is_complete]
         if incomplete:
             print(
                 f"\n  Note: {len(incomplete)} HCL block(s) contain TODO placeholders for "
@@ -594,17 +586,14 @@ def _catalog_report(
 
     if not args.no_save:
         try:
-            path = save_snapshot(
-                Snapshot(policies=result.policies, captured_at=_now()), cache_dir
-            )
+            path = save_snapshot(Snapshot(policies=result.policies, captured_at=_now()), cache_dir)
             lines.append(f"  Snapshot saved: {path}")
         except CacheError as exc:
             # Not fatal to the artifacts already produced, but it does mean the
             # next run has no baseline and will silently report no changes.
             lines.append(f"  WARNING: {exc}")
             lines.append(
-                "  The baseline was not updated, so the next run cannot detect "
-                "policy changes."
+                "  The baseline was not updated, so the next run cannot detect policy changes."
             )
             degraded = True
     return lines, degraded
@@ -612,8 +601,7 @@ def _catalog_report(
 
 def cmd_policies(args: argparse.Namespace, provider: Provider) -> int:
     if args.catalog is None:
-        print(f"error: --catalog is required. {provider.catalog_export_hint}",
-              file=sys.stderr)
+        print(f"error: --catalog is required. {provider.catalog_export_hint}", file=sys.stderr)
         return 2
     try:
         result = JsonFileSource(policies_path=args.catalog).load()
@@ -645,10 +633,7 @@ def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
     results = provider.verify_recipes(recipes)
     source = provider.describe_model_source()
 
-    print(
-        f"Verifying {len(recipes)} recipe(s) against {provider.display_name} "
-        f"service models."
-    )
+    print(f"Verifying {len(recipes)} recipe(s) against {provider.display_name} service models.")
     print(f"Model source: {source}\n")
 
     failures = 0
@@ -684,8 +669,7 @@ def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
         )
         return 3
     print(
-        f"All {len(results)} recipe(s) match the current {provider.display_name} "
-        f"API definitions."
+        f"All {len(results)} recipe(s) match the current {provider.display_name} API definitions."
     )
     return 0
 
@@ -734,9 +718,7 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
             f"Tenable Cloud Security findings. Curated, best-effort, and "
             f"safety-tiered. Never modifies {provider.display_name}."
         ),
-        epilog=_EPILOG.format(
-            command=provider.command, display=provider.display_name
-        ),
+        epilog=_EPILOG.format(command=provider.command, display=provider.display_name),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -752,8 +734,7 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
             type=Path,
             default=None,
             metavar="DIR",
-            help="where to store the policy-catalog snapshot "
-            f"(default: {default_cache_dir()})",
+            help=f"where to store the policy-catalog snapshot (default: {default_cache_dir()})",
         )
         p.add_argument(
             "--no-save",
@@ -846,9 +827,7 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
     pol.add_argument(
         "--catalog", type=Path, required=True, metavar="FILE", help="policy catalog JSON"
     )
-    pol.add_argument(
-        "--unsupported", action="store_true", help="list every policy with no recipe"
-    )
+    pol.add_argument("--unsupported", action="store_true", help="list every policy with no recipe")
     add_cache_args(pol)
     pol.set_defaults(func=cmd_policies)
 

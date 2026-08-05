@@ -65,6 +65,14 @@ addopts = "-q"
 line-length = 100
 target-version = "py310"
 
+# Formatting is mechanical and enforced in CI (`ruff format --check`), so it is
+# never a review topic. Declared explicitly, empty, rather than left to the
+# default: `ruff format` reads line-length above whether or not this section
+# exists, so its absence looked like an opt-out while the tool in fact had an
+# opinion -- leaving `--check` permanently red with no way for a reader to tell
+# whether that was a real finding or a tool the project does not use.
+[tool.ruff.format]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "RET", "SIM"]
 ignore = ["S101"]  # assert is fine in tests

@@ -73,9 +73,7 @@ def _plan(pairs, fmt, **kwargs):
     kwargs.setdefault("cloud", AWS.cloud)
     kwargs.setdefault("scope_noun", AWS.credential_scope_noun)
     kwargs.setdefault("extension", AWS.shell_extension)
-    kwargs.setdefault(
-        "provider_is_region_scoped", AWS.hcl_provider_is_region_scoped
-    )
+    kwargs.setdefault("provider_is_region_scoped", AWS.hcl_provider_is_region_scoped)
     return plan_units(pairs, fmt, **kwargs)
 
 
@@ -96,9 +94,7 @@ def _uncommented(text: str) -> str:
 
 def _readme(pairs):
     units = _units(pairs)
-    return render_readme(
-        units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs)
-    )
+    return render_readme(units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs))
 
 
 def _unwrapped(text: str) -> str:
@@ -166,9 +162,7 @@ def test_artifacts_point_at_the_readme():
     # silent omission.
     pairs = _pairs()
     units = _plan(pairs, Format.CLI)
-    script = render_cli_script(
-        pairs, version=VERSION, generated_at=STAMP, unit=units[0]
-    )
+    script = render_cli_script(pairs, version=VERSION, generated_at=STAMP, unit=units[0])
     assert "README.md" in script
     hcl = render_hcl(pairs, version=VERSION, generated_at=STAMP)
     assert "README.md" in hcl
@@ -195,9 +189,7 @@ def test_output_grows_sublinearly_with_resource_count():
     # ratio so it holds regardless of the exact prose.
     one = render_cli_script(_pairs(), version=VERSION, generated_at=STAMP)
     many_specs = [(f"b{i}", "us-east-1", "111111111111") for i in range(50)]
-    many = render_cli_script(
-        _pairs(specs=many_specs), version=VERSION, generated_at=STAMP
-    )
+    many = render_cli_script(_pairs(specs=many_specs), version=VERSION, generated_at=STAMP)
     marginal = (len(many) - len(one)) / 49
     assert marginal < 200, f"{marginal:.0f} B per extra resource is too much"
 
@@ -256,9 +248,7 @@ def test_readme_refuses_to_describe_units_from_another_cloud():
     pairs = _pairs()
     units = _plan(pairs, Format.CLI) + _plan(pairs, Format.CLI, cloud="azure")
     with pytest.raises(ValueError, match="one cloud"):
-        render_readme(
-            units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs)
-        )
+        render_readme(units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs))
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +266,7 @@ def test_manifest_is_valid_json_and_indexes_every_file():
     assert data["clouds"] == ["aws"]
     # The path, not just the name: a consumer must be able to open the file without
     # reconstructing the layout rule that put it in a per-cloud directory.
-    assert [entry["path"] for entry in data["files"]] == [
-        u.relative_path for u in units
-    ]
+    assert [entry["path"] for entry in data["files"]] == [u.relative_path for u in units]
 
 
 def test_manifest_records_scope_and_counts_per_file():
@@ -346,8 +334,7 @@ def test_size_forecast_does_not_under_predict_a_real_run():
     from remgen.core.cli import estimate_output_bytes
 
     specs = [
-        (f"b{i}", ["us-east-1", "eu-west-1"][i % 2], f"{111111111111 + i % 4}")
-        for i in range(40)
+        (f"b{i}", ["us-east-1", "eu-west-1"][i % 2], f"{111111111111 + i % 4}") for i in range(40)
     ]
     pairs = _pairs(specs=specs)
     actual = 0

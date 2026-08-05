@@ -273,9 +273,7 @@ def test_same_name_in_two_accounts_gets_distinct_labels():
     assert len(set(labels.values())) == 2
 
     out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
-    declared = [
-        line for line in out.splitlines() if line.startswith('resource "aws_thing"')
-    ]
+    declared = [line for line in out.splitlines() if line.startswith('resource "aws_thing"')]
     assert len(declared) == 2
     assert len(set(declared)) == 2, "duplicate resource label would fail tofu validate"
 
@@ -338,9 +336,7 @@ def test_import_and_resource_labels_agree_after_disambiguation():
         for line in out.splitlines()
         if "to = aws_thing." in line
     }
-    declared = {
-        line.split('"')[3] for line in out.splitlines() if line.startswith('resource "')
-    }
+    declared = {line.split('"')[3] for line in out.splitlines() if line.startswith('resource "')}
     assert targets == declared
     assert len(targets) == 2
 

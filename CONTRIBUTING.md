@@ -91,8 +91,14 @@ All of these must pass, and all of them run in CI as blocking checks:
 pip install -e '.[dev]'
 pytest                  # full suite, no -k narrowing
 ruff check .
+ruff format --check .   # or `ruff format .` to fix
 bandit -q -r src/
 ```
+
+`ruff format` is the autoformatter and `ruff check` is the linter — same binary, different tools, and
+CI runs both. Formatting is therefore mechanical: do not spend review comments on it, and do not
+hand-format against it. It provably does not change generated output, so reformatting a generator is
+safe.
 
 The OpenTofu-backed tests are slow (~110s total) because they run a real binary. Do not skip them
 locally and do not narrow the suite to the tests you expect to be affected — the ones you did not

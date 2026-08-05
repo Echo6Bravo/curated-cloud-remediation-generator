@@ -47,9 +47,7 @@ _DOCS_LABEL = "AWS docs"
 _COMMAND = "awsremgen"
 
 
-def aws_recipe_notes(
-    recipe: Recipe, *, count: int | None = None, full: bool = False
-) -> list[str]:
+def aws_recipe_notes(recipe: Recipe, *, count: int | None = None, full: bool = False) -> list[str]:
     """AWS-labelled recipe notes.
 
     A thin wrapper over the shared :func:`~remgen.core.generators.common.recipe_notes`
@@ -57,6 +55,7 @@ def aws_recipe_notes(
     only the words "AWS docs" are not.
     """
     return recipe_notes(recipe, count=count, full=full, docs_label=_DOCS_LABEL)
+
 
 #: Short by design. The review checklist and the explanation of how these are
 #: generated live in README.md alongside the artifacts, written once per run rather
@@ -108,7 +107,6 @@ echo
 echo "Done. {count} remediation command(s) completed."
 echo "Re-scan in Tenable Cloud Security to confirm the findings clear."
 """
-
 
 
 def render_one(recipe: Recipe, finding: Finding, *, standalone: bool = True) -> str:
@@ -191,9 +189,7 @@ def render_cli_script(
 
     if unit is not None:
         parts.append(
-            _ACCOUNT_PREFLIGHT.format(
-                account_id=unit.scope_id, scope=unit.scope_description
-            )
+            _ACCOUNT_PREFLIGHT.format(account_id=unit.scope_id, scope=unit.scope_description)
         )
 
     # Group by tier so the riskiest commands are never interleaved with the
@@ -206,9 +202,7 @@ def render_cli_script(
         # Then group by policy, so each policy's description, safety notes and
         # caveats are stated once above the commands they apply to.
         for recipe, findings in group_by_policy(in_tier):
-            parts.append(
-                "\n" + comment_block(aws_recipe_notes(recipe, count=len(findings))) + "\n"
-            )
+            parts.append("\n" + comment_block(aws_recipe_notes(recipe, count=len(findings))) + "\n")
             for finding in findings:
                 parts.append("\n" + render_one(recipe, finding, standalone=False))
 

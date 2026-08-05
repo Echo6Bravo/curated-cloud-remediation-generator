@@ -94,9 +94,7 @@ def collapse_whitespace(value: str, *, limit: int = MAX_TEXT_LENGTH) -> str:
     if not isinstance(value, str):
         return ""
     cleaned = "".join(
-        " " if ch.isspace() else ch
-        for ch in value
-        if ch.isprintable() or ch.isspace()
+        " " if ch.isspace() else ch for ch in value if ch.isprintable() or ch.isspace()
     )
     collapsed = " ".join(cleaned.split())
     if len(collapsed) > limit:
@@ -248,9 +246,7 @@ class HclTarget:
     @property
     def is_complete(self) -> bool:
         """True when the emitted resource block needs no human completion."""
-        return not (
-            self.unresolvable_required_attributes or self.unresolvable_required_blocks
-        )
+        return not (self.unresolvable_required_attributes or self.unresolvable_required_blocks)
 
     @property
     def unresolvable_names(self) -> tuple[str, ...]:
@@ -332,11 +328,7 @@ class Recipe:
         Derived rather than hand-set so a recipe author cannot accidentally
         label something safe while also declaring it irreversible.
         """
-        if (
-            self.data_path_impact
-            or self.needs_replacement
-            or self.effort is Effort.MEDIUM
-        ):
+        if self.data_path_impact or self.needs_replacement or self.effort is Effort.MEDIUM:
             return SafetyTier.DISRUPTIVE
         if (
             not self.reversible

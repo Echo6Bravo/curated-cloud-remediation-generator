@@ -154,7 +154,17 @@ def test_safety_level_all_includes_more_remediations(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(["generate", "--findings", str(findings), "--out", str(env / "safe")])
     safe_out = capsys.readouterr().out
-    _run(["generate", "--findings", str(findings), "--out", str(env / "all"), "--safety-level", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "all"),
+            "--safety-level",
+            "all",
+        ]
+    )
     all_out = capsys.readouterr().out
 
     safe_script = _joined(env / "safe", ".sh")
@@ -228,8 +238,13 @@ def test_each_safety_level_is_a_superset_of_the_safer_ones(env, capsys, level):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
         [
-            "generate", "--findings", str(findings),
-            "--out", str(env / level), "--safety-level", level,
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / level),
+            "--safety-level",
+            level,
         ]
     )
     capsys.readouterr()
@@ -252,8 +267,13 @@ def test_an_unknown_safety_level_is_rejected_by_the_parser(env, capsys):
     with pytest.raises(SystemExit) as exc:
         _run(
             [
-                "generate", "--findings", str(findings),
-                "--out", str(env / "art"), "--safety-level", "reckless",
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "reckless",
             ]
         )
     assert exc.value.code == 2
@@ -305,9 +325,9 @@ def test_default_writes_both_formats(env):
 def test_format_selects_exactly_what_was_asked_for(env, value, want_sh, want_tf):
     findings = _write(env / "f.json", list(GOOD.values()))
     out = env / "art"
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(out), "--format", value]
-    ) == 0
+    assert (
+        _run(["generate", "--findings", str(findings), "--out", str(out), "--format", value]) == 0
+    )
     assert bool(_scripts(out)) is want_sh
     assert bool(_tfs(out)) is want_tf
 
@@ -322,9 +342,7 @@ def test_an_unknown_format_is_an_error_not_a_silent_omission(env, capsys, value)
     """
     findings = _write(env / "f.json", list(GOOD.values()))
     out = env / "art"
-    code = _run(
-        ["generate", "--findings", str(findings), "--out", str(out), "--format", value]
-    )
+    code = _run(["generate", "--findings", str(findings), "--out", str(out), "--format", value])
     captured = capsys.readouterr()
     assert code == 2
     assert "--format" in captured.err
@@ -338,8 +356,13 @@ def test_format_is_reported_in_the_summary(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
         [
-            "generate", "--findings", str(findings),
-            "--out", str(env / "art"), "--format", "cli",
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "cli",
         ]
     )
     assert "Formats: cli" in capsys.readouterr().out
@@ -354,8 +377,15 @@ def test_hcl_only_reports_the_remediations_it_could_not_express(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
         [
-            "generate", "--findings", str(findings), "--out", str(env / "art"),
-            "--format", "hcl", "--safety-level", "all",
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "hcl",
+            "--safety-level",
+            "all",
         ]
     )
     out = capsys.readouterr().out
@@ -366,14 +396,17 @@ def test_hcl_only_reports_the_remediations_it_could_not_express(env, capsys):
         assert "no IaC equivalent" not in out
 
 
-def test_hcl_only_does_not_mention_todo_placeholders_for_output_it_did_not_write(
-    env, capsys
-):
+def test_hcl_only_does_not_mention_todo_placeholders_for_output_it_did_not_write(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
         [
-            "generate", "--findings", str(findings), "--out", str(env / "art"),
-            "--format", "cli",
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--format",
+            "cli",
         ]
     )
     # There are no resource blocks in a script, so pointing the reader at TODOs sends
@@ -415,7 +448,17 @@ def test_manifest_paths_resolve_from_the_output_directory(env):
 
 def test_malicious_findings_never_reach_artifacts(env, capsys):
     findings = _write(env / "f.json", MALICIOUS + list(GOOD.values()))
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     captured = capsys.readouterr().out
     assert "rejected" in captured
 
@@ -446,7 +489,17 @@ def test_malicious_findings_are_reported_as_rejected(env, capsys):
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 def test_generated_script_parses_as_bash(env):
     findings = _write(env / "f.json", list(GOOD.values()) + MALICIOUS)
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     scripts = _scripts(env / "art")
     assert scripts
     for script in scripts:
@@ -482,7 +535,7 @@ def _tofu_check(tf_file, work):
     work.mkdir(parents=True, exist_ok=True)
     shutil.copy(tf_file, work / "main.tf")
     (work / "provider.tf").write_text(
-        'terraform {\n  required_providers {\n'
+        "terraform {\n  required_providers {\n"
         '    aws = { source = "hashicorp/aws", version = "~> 5.0" }\n'
         "  }\n}\n"
         'provider "aws" {\n  region = "us-east-1"\n}\n',
@@ -530,7 +583,17 @@ def _tofu_check_all(out, work_root):
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
 def test_generated_hcl_is_valid_and_formatted(env):
     findings = _write(env / "f.json", list(GOOD.values()) + MALICIOUS)
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     _tofu_check_all(env / "art", env / "work")
 
 
@@ -549,9 +612,20 @@ def test_same_resource_name_in_two_accounts_still_validates(env):
     dev = dict(GOOD["dynamodb"], region="us-east-1", accountId="111111111111")
     prod = dict(GOOD["dynamodb"], region="us-west-2", accountId="222222222222")
     findings = _write(env / "f.json", [dev, prod])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
 
     # One file per account, each with exactly one block, and no file naming both.
     files = _tfs(env / "art")
@@ -569,7 +643,17 @@ def test_same_resource_name_in_two_accounts_still_validates(env):
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
 def test_every_recipe_pairs_one_import_with_one_resource(env):
     findings = _write(env / "f.json", list(GOOD.values()))
-    _run(["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"])
+    _run(
+        [
+            "generate",
+            "--findings",
+            str(findings),
+            "--out",
+            str(env / "art"),
+            "--safety-level",
+            "all",
+        ]
+    )
     text = _joined(env / "art", ".tf")
     # A resource block without an import block would create a duplicate resource.
     assert text.count("import {") == text.count('\nresource "')
@@ -734,10 +818,14 @@ def test_unwritable_cache_dir_warns_and_exits_degraded(env, capsys):
         code = _run(
             [
                 "generate",
-                "--findings", str(findings),
-                "--catalog", str(catalog),
-                "--out", str(env / "art"),
-                "--cache-dir", str(ro / "cache"),
+                "--findings",
+                str(findings),
+                "--catalog",
+                str(catalog),
+                "--out",
+                str(env / "art"),
+                "--cache-dir",
+                str(ro / "cache"),
             ]
         )
         captured = capsys.readouterr()
@@ -836,9 +924,20 @@ def test_duplicate_findings_are_merged_and_counted(env, capsys):
     # than being a silent change to the record count.
     one = GOOD["dynamodb"]
     findings = _write(env / "f.json", [one, one, one])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "Records read:         3" in out
     assert "duplicates merged:  2" in out
@@ -856,9 +955,20 @@ def test_same_resource_in_different_accounts_is_not_a_duplicate(env, capsys):
     dev = dict(GOOD["dynamodb"], accountId="111111111111")
     prod = dict(GOOD["dynamodb"], accountId="222222222222")
     findings = _write(env / "f.json", [dev, prod])
-    assert _run(
-        ["generate", "--findings", str(findings), "--out", str(env / "art"), "--safety-level", "all"]
-    ) == 0
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "duplicates merged" not in out
     assert "Remediations written: 2" in out

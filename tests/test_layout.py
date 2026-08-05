@@ -83,9 +83,7 @@ def test_no_unit_ever_spans_two_scopes(fmt):
 def test_scope_split_is_not_defeated_by_disabling_size_splitting(fmt):
     # max_per_file=0 turns off the *soft* cap only. If it also merged scopes, a
     # user could silently opt out of a correctness rule via a size flag.
-    pairs = _pairs(
-        [("b1", "us-east-1", "111111111111"), ("b2", "us-east-1", "222222222222")]
-    )
+    pairs = _pairs([("b1", "us-east-1", "111111111111"), ("b2", "us-east-1", "222222222222")])
     units = _plan(pairs, fmt, max_per_file=0)
     assert len(units) == 2
     assert {u.scope_id for u in units} == {"111111111111", "222222222222"}
@@ -94,9 +92,7 @@ def test_scope_split_is_not_defeated_by_disabling_size_splitting(fmt):
 def test_hcl_never_spans_two_regions_even_when_small():
     # Region is a hard boundary for HCL because the AWS provider is region-scoped,
     # so this split must happen at two findings, not only at scale.
-    pairs = _pairs(
-        [("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")]
-    )
+    pairs = _pairs([("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")])
     units = _plan(pairs, Format.HCL)
     assert len(units) == 2
     assert {u.region for u in units} == {"us-east-1", "eu-west-1"}
@@ -105,9 +101,7 @@ def test_hcl_never_spans_two_regions_even_when_small():
 
 
 def test_hcl_region_split_survives_disabled_size_splitting():
-    pairs = _pairs(
-        [("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")]
-    )
+    pairs = _pairs([("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")])
     assert len(_plan(pairs, Format.HCL, max_per_file=0)) == 2
 
 
@@ -116,11 +110,12 @@ def test_hcl_keeps_regions_together_when_the_provider_is_not_region_scoped():
     # `location` per resource, so splitting there would fragment output without
     # making any file more correct. A hard-coded AWS assumption here would silently
     # do that to every cloud added later.
-    pairs = _pairs(
-        [("b1", "eastus", "sub-1"), ("b2", "westeurope", "sub-1")]
-    )
+    pairs = _pairs([("b1", "eastus", "sub-1"), ("b2", "westeurope", "sub-1")])
     units = _plan(
-        pairs, Format.HCL, cloud="azure", provider_is_region_scoped=False,
+        pairs,
+        Format.HCL,
+        cloud="azure",
+        provider_is_region_scoped=False,
         scope_noun="subscription",
     )
     assert len(units) == 1
@@ -130,9 +125,7 @@ def test_hcl_keeps_regions_together_when_the_provider_is_not_region_scoped():
 def test_cli_keeps_regions_together_when_small():
     # A CLI script carries --region per command, so splitting a small script by
     # region would produce more files without making anything more correct.
-    pairs = _pairs(
-        [("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")]
-    )
+    pairs = _pairs([("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")])
     units = _plan(pairs, Format.CLI)
     assert len(units) == 1
     assert units[0].region is None

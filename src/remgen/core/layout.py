@@ -167,9 +167,7 @@ class OutputUnit:
     def scope_description(self) -> str:
         """Human-readable scope, for the file header and the manifest."""
         region = self.region if self.region is not None else "all regions"
-        part = (
-            f", part {self.part} of {self.total_parts}" if self.part is not None else ""
-        )
+        part = f", part {self.part} of {self.total_parts}" if self.part is not None else ""
         return f"{self.cloud} {self.scope_noun} {self.scope_id}, {region}{part}"
 
 
@@ -289,32 +287,24 @@ def describe_layout(units: list[OutputUnit]) -> list[str]:
     noun = first.scope_noun
     plural = noun if noun.endswith("s") else f"{noun}s"
     lines = [
-        f"  {len(units)} {ext} file(s) across {len(scopes)} {plural} "
-        f"in {', '.join(clouds)}.",
+        f"  {len(units)} {ext} file(s) across {len(scopes)} {plural} in {', '.join(clouds)}.",
     ]
     if len(units) > 1:
         lines.append(
-            f"  Split by {noun} because no format can target more than one {noun} "
-            "at a time."
+            f"  Split by {noun} because no format can target more than one {noun} at a time."
         )
         if len(clouds) > 1:
-            lines.append(
-                "  Split by cloud because each file targets one vendor CLI or "
-                "provider."
-            )
+            lines.append("  Split by cloud because each file targets one vendor CLI or provider.")
         if first.fmt is Format.HCL and any(u.region is not None for u in units):
             lines.append(
-                "  Split by region because this cloud's Terraform provider is "
-                "region-scoped."
+                "  Split by region because this cloud's Terraform provider is region-scoped."
             )
         if any(u.part is not None for u in units):
             lines.append(
                 "  Large scopes were split into numbered parts for reviewability; "
                 "run the parts of a scope in order."
             )
-        lines.append(
-            f"  Each file must be run with credentials for the {noun} in its name."
-        )
+        lines.append(f"  Each file must be run with credentials for the {noun} in its name.")
     return lines
 
 

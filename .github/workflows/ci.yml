@@ -210,6 +210,14 @@ jobs:
           python-version: "3.13"
       - run: pip install -e '.[dev]'
       - run: ruff check --output-format=github .
+      - name: Formatting is canonical
+        # Enforced so that formatting is never a review topic and cannot drift back.
+        # `ruff format` reads line-length from [tool.ruff] whether or not the project
+        # opts in, so leaving this unenforced meant `--check` was permanently red with
+        # no way for a reader to tell a real finding from a tool the project ignores.
+        # Fix locally with `ruff format .` -- it changes no behaviour and no generated
+        # output; that was verified byte-for-byte against the committed sample.
+        run: ruff format --check --diff .
 
   sast:
     name: SAST (bandit)
