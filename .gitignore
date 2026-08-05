@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated output and local state — never commit
+artifacts/
+out/
+.remgen-cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Terraform / OpenTofu working files (if a user runs generated HCL in-tree)
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
