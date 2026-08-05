@@ -12,6 +12,16 @@ remgen verify                                             # do the recipes still
 remgen generate --findings findings.json --out ./artifacts
 ```
 
+## See it before you install it
+
+[`examples/`](./examples) holds a complete real run, committed: the input findings, the console
+output verbatim, and every artifact it produced. Start with
+[`examples/README.md`](./examples/README.md), which walks through why one input produced five
+artifacts, what a `TODO` placeholder means, and what happens to a malformed finding.
+
+CI regenerates that sample on every push and fails if it differs, so it cannot quietly become a
+picture of an older version.
+
 ## What this is, and what it is not
 
 The name is literal, and each word in it is a limitation worth stating plainly.
@@ -160,6 +170,15 @@ CI use.
 **Then review the artifacts and run them yourself.** The tool's job ends when the files are
 written.
 
+To see all of that without a findings export of your own, run it against the committed fixture:
+
+```bash
+remgen generate --findings examples/findings.sample.json --out ./artifacts --tier caution -v
+```
+
+The result is what [`examples/sample-output/`](./examples/sample-output) contains, and
+[`examples/sample-run.txt`](./examples/sample-run.txt) is the console output it prints.
+
 ## Known limitations
 
 - **Coverage is 5 policies.** If your finding's policy has no recipe, it is reported as
@@ -178,6 +197,8 @@ written.
 
 ## Project
 
+- [examples/README.md](./examples/README.md) — a committed real run: input, console output, and
+  every artifact, annotated.
 - [ROADMAP.md](./ROADMAP.md) — what is deferred and why, including the open question of whether
   to ship non-reversible remediations.
 - [NOTICE.md](./NOTICE.md) — third-party licensing analysis (OpenTofu MPL-2.0, Terraform BUSL-1.1,

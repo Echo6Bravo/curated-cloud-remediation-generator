@@ -35,6 +35,20 @@ Then prove it end to end:
 - Tests cover the new recipe at the smallest input size where a bug could appear (two items, two
   accounts, two regions), not just a single happy-path finding.
 
+A new recipe changes the shipped output, so it also changes the committed sample. Regenerate it in
+the same commit — CI diffs `examples/sample-output/` against a fresh run and fails on drift:
+
+```bash
+remgen generate --findings examples/findings.sample.json --out ./artifacts --tier caution -v \
+  > examples/sample-run.txt 2>&1
+rm -rf examples/sample-output && mkdir examples/sample-output && cp artifacts/* examples/sample-output/
+```
+
+If your recipe covers a policy worth demonstrating, add a finding for it to
+`examples/findings.sample.json` rather than leaving the sample silent about it. Keep the four
+deliberately-bad records — they are what makes the sample show rejection and reconciliation instead
+of only the happy path.
+
 **Do not weaken an existing safety assertion to make a new recipe pass.** If a new recipe trips a
 safety check, the check is usually right. Replace a blanket ban with an exact allowlist that stays
 accounted for, rather than loosening the pattern.

@@ -67,6 +67,127 @@ jobs:
           fi
           echo "no tests skipped"
 
+  sample:
+    name: Committed sample is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.5
+      - run: pip install -e '.[dev]'
+      - name: Install botocore so the run is not degraded
+        # Without service models, `generate` prints an extra "could not be verified"
+        # warning and the transcript legitimately differs. Installing them keeps the
+        # comparison meaningful instead of forcing the check to tolerate two shapes.
+        run: pip install botocore
+      - name: Regenerate the sample and diff it against what is committed
+        # examples/ is documentation that claims to be real output. Unlike prose, that
+        # claim is mechanically checkable, so it is checked -- a sample that silently
+        # describes an older version is worse than no sample, because a reader has no
+        # way to tell. Only the timestamp is normalized; everything else must match
+        # byte for byte, which also proves output stays deterministic.
+        run: |
+          set -euo pipefail
+          remgen generate --findings examples/findings.sample.json \
+            --out ./artifacts --tier caution -v > /tmp/sample-run.txt 2>&1
+          # The generation timestamp is the only legitimate difference between two runs,
+          # and it appears in four distinct forms: the .sh/.tf header, the manifest
+          # field, the artifact README's prose line, and the console summary. Missing
+          # one makes this check fail on every run for a reason that is not drift.
+          norm() {
+            sed -E 's/(# Generated: |"generated_at": "|v[0-9][0-9.]* on |-- generated )[0-9T:+-]+/\1TIMESTAMP/' "$1"
+          }
+          fail=0
+          for committed in examples/sample-output/*; do
+            name="$(basename "$committed")"
+            fresh="artifacts/$name"
+            if [ ! -f "$fresh" ]; then
+              echo "::error::the run no longer produces $name, but it is committed under examples/sample-output/"
+              fail=1
+              continue
+            fi
+            if ! diff -u <(norm "$committed") <(norm "$fresh"); then
+              echo "::error::examples/sample-output/$name is stale. Regenerate it (see examples/README.md)."
+              fail=1
+            fi
+          done
+          for fresh in artifacts/*; do
+            name="$(basename "$fresh")"
+            if [ ! -f "examples/sample-output/$name" ]; then
+              echo "::error::the run now produces $name, which is not committed under examples/sample-output/"
+              fail=1
+            fi
+          done
+          if ! diff -u <(norm examples/sample-run.txt) <(norm /tmp/sample-run.txt); then
+            echo "::error::examples/sample-run.txt no longer matches the real console output."
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "committed sample matches a fresh run"
+      - name: The committed sample really parses
+        # The sample is the first thing a reader trusts, so it gets the same real-parser
+        # treatment as generated output in the test suite. A substring check would pass
+        # on a file that reads correctly and does not parse.
+        run: |
+          set -euo pipefail
+          for f in examples/sample-output/*.sh; do bash -n "$f"; done
+          i=0
+          for f in examples/sample-output/*.tf; do
+            work="/tmp/tfcheck$i"; i=$((i+1))
+            mkdir -p "$work"; cp "$f" "$work/main.tf"
+            cat > "$work/provider.tf" <<'EOF'
+          terraform {
+            required_providers {
+              aws = {
+                source  = "hashicorp/aws"
+                version = ">= 5.0"
+              }
+            }
+          }
+
+          provider "aws" {
+            region = "us-east-1"
+          }
+          EOF
+            ( cd "$work" && tofu fmt -check -no-color main.tf \
+                && tofu init -no-color -backend=false >/dev/null \
+                && tofu validate -no-color )
+          done
+          echo "sample artifacts parse and are canonically formatted"
+      - name: The sample's account guard still refuses the wrong account
+        # The examples/README.md claims this, so the claim is executed rather than
+        # asserted. A stub `aws` reports a different account and logs any mutating
+        # call; the script must exit non-zero having made none.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fakebin
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'if [ "$1" = "sts" ]; then echo 999999999999; exit 0; fi' \
+            'echo "MUTATION: aws $*" >> /tmp/fakebin/calls.log' \
+            'exit 0' > /tmp/fakebin/aws
+          chmod +x /tmp/fakebin/aws
+          : > /tmp/fakebin/calls.log
+          for f in examples/sample-output/*.sh; do
+            set +e
+            PATH=/tmp/fakebin:$PATH bash "$f" >/dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "::error::$f ran to completion against the WRONG account; the guard did not fire"
+              exit 1
+            fi
+          done
+          if [ -s /tmp/fakebin/calls.log ]; then
+            echo "::error::mutating aws calls were issued despite an account mismatch:"
+            cat /tmp/fakebin/calls.log
+            exit 1
+          fi
+          echo "account guard refuses the wrong account and issues no mutating calls"
+
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
@@ -107,15 +228,30 @@ jobs:
           errs = []
           # 1. Files named from source comments/docstrings and from doc links.
           for f in ("README.md", "ROADMAP.md", "NOTICE.md", "CHANGELOG.md",
-                    "CONTRIBUTING.md", "SECURITY.md", "LICENSE"):
+                    "CONTRIBUTING.md", "SECURITY.md", "LICENSE",
+                    # The sample is documentation the README sends readers to, so a
+                    # missing piece of it is a dangling reference like any other. Note
+                    # that '.gitignore' contains 'artifacts/', which matches at any
+                    # depth -- naming the sample directory that would have committed
+                    # nothing while every doc still pointed at it.
+                    "examples/README.md", "examples/findings.sample.json",
+                    "examples/sample-run.txt"):
               if not pathlib.Path(f).exists():
                   errs.append(f"missing required file: {f}")
-          # 2. Relative markdown links in the docs must resolve.
-          for doc in pathlib.Path(".").glob("*.md"):
+          sample = pathlib.Path("examples/sample-output")
+          if not any(sample.glob("*.sh")) or not any(sample.glob("*.tf")):
+              errs.append("examples/sample-output/ must contain committed .sh and .tf artifacts")
+          for companion in ("README.md", "manifest.json"):
+              if not (sample / companion).exists():
+                  errs.append(f"examples/sample-output/ is missing {companion}")
+          # 2. Relative markdown links in the docs must resolve, including from
+          #    examples/ -- where the links are '../SECURITY.md' and so only resolve
+          #    when checked relative to the linking document.
+          for doc in list(pathlib.Path(".").glob("*.md")) + list(pathlib.Path("examples").glob("*.md")):
               text = doc.read_text()
-              for target in re.findall(r'\]\(\.{0,2}/?([A-Za-z0-9_./-]+\.md)\)', text):
-                  if not (doc.parent / target).exists():
-                      errs.append(f"{doc.name}: broken link -> {target}")
+              for target in re.findall(r'\]\((\.{0,2}/?[A-Za-z0-9_./-]+\.md)\)', text):
+                  if not (doc.parent / target).resolve().exists():
+                      errs.append(f"{doc}: broken link -> {target}")
           # 3. Any src file citing a doc must have that doc present.
           for py in pathlib.Path("src").rglob("*.py"):
               for ref in re.findall(r'\b([A-Z][A-Z0-9_]*\.md)\b', py.read_text()):
