@@ -427,12 +427,10 @@ def test_render_hcl_includes_the_providers_scope_block_when_given_one():
         generated_at=STAMP,
         unit=unit,
         command=AWS.command,
-        docs_label=AWS.docs_label,
         scope_block=scope_block,
     )
     assert 'allowed_account_ids = ["111111111111"]' in out
     assert AWS.command in out
-    assert "AWS docs" in out or not any(r.docs_url for r, _ in unit.pairs)
 
 
 def test_render_hcl_without_a_scope_block_emits_no_scope_statement():

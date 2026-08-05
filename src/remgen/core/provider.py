@@ -111,16 +111,6 @@ class Provider:
     models_unavailable_hint: str = ""
     cli_requirement: str = ""
 
-    @property
-    def docs_label(self) -> str:
-        """How this cloud's documentation links are labelled in artifacts.
-
-        Derived rather than declared: "AWS docs" is the display name plus a fixed
-        word in every cloud, and a separate field would be one more place for the
-        two to disagree.
-        """
-        return f"{self.display_name} docs"
-
     def __post_init__(self) -> None:
         # The cloud id becomes a path segment. A value containing a separator or
         # a traversal component would write outside the output directory, so it

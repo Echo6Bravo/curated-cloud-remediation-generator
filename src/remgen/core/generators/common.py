@@ -180,13 +180,7 @@ def tier_banner(tier: SafetyTier) -> str:
     return f"# {bar}\n# {label}\n# {bar}"
 
 
-def recipe_notes(
-    recipe: Recipe,
-    *,
-    count: int | None = None,
-    full: bool = False,
-    docs_label: str = "Provider docs",
-) -> list[str]:
+def recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
     """Return the comment lines that describe a recipe, independent of any finding.
 
     Emitted once per policy rather than once per resource: every line here is
@@ -199,42 +193,23 @@ def recipe_notes(
     Args:
         recipe: The recipe to describe.
         count: How many resources this group covers, when known.
-        full: Include the explanatory reference -- summary, prerequisites, caveats
-            and documentation link. Default False, which emits only the title,
-            identifier and safety notes.
-        docs_label: How to label the documentation link, e.g. ``"AWS docs"``.
 
-    The split is by consequence, not by length. Safety notes state what a change
-    costs, whether it can be undone, and whether it affects live traffic; someone
-    reading a command must see those without leaving the file, so they stay inline.
-    The reference material answers "what is this policy and why" -- it is identical
-    for every occurrence, so a run spanning many scopes would repeat it hundreds of
-    times. It is written once in the run's README, which renders that section
-    itself; ``full=True`` produces the same content for any caller that wants it
-    inline instead.
+    What is included here and what is not is decided by consequence, not by length.
+    Safety notes state what a change costs, whether it can be undone, and whether it
+    affects live traffic; someone reading a command must see those without leaving
+    the file, so they stay inline. The reference material -- summary, prerequisites,
+    caveats, documentation link -- answers "what is this policy and why". It is
+    identical for every occurrence, so a run spanning many scopes would repeat it
+    hundreds of times; it is written once in the run's README instead, and the
+    pointer below is what makes that a relocation rather than an omission.
     """
     notes: list[str] = [f"POLICY: {recipe.policy_title}", f"Policy ID: {recipe.policy_id}"]
     if count is not None:
         notes.append(f"Resources: {count}")
-    if full:
-        notes.extend(("", recipe.summary))
     if recipe.safety_notes:
         notes.append("")
         notes.extend(recipe.safety_notes)
-    if full:
-        if recipe.prerequisites:
-            notes.append("")
-            notes.append("Prerequisites:")
-            notes.extend(f"  - {p}" for p in recipe.prerequisites)
-        if recipe.caveats:
-            notes.append("")
-            notes.append("Caveats:")
-            notes.extend(f"  - {c}" for c in recipe.caveats)
-        if recipe.docs_url:
-            notes.append("")
-            notes.append(f"{docs_label}: {recipe.docs_url}")
-    else:
-        notes.append("Summary, caveats and docs: see README.md")
+    notes.append("Summary, caveats and docs: see README.md")
     return notes
 
 

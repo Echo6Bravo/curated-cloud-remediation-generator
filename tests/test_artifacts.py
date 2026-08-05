@@ -157,6 +157,33 @@ def test_cost_warning_reaches_the_artifact():
     assert "COST SCALES WITH USAGE" in script
 
 
+@pytest.mark.parametrize("recipe", all_recipes(), ids=lambda r: r.policy_id)
+def test_reference_detail_is_in_the_readme_ONLY_not_also_in_the_artifacts(recipe):
+    """The relocation is one-way, and that is the point.
+
+    The complement of test_every_recipes_reference_detail_survives_in_the_readme:
+    that test proves nothing was lost, this one proves something was actually
+    *moved*. Without it, an "emit the full reference inline as well" option satisfies
+    every other test in this file while undoing the size work -- which is exactly
+    what an unexercised `full=True` parameter on ``recipe_notes`` was, so this test
+    is the guard that replaced it.
+
+    Safety notes are deliberately excluded: those stay in both places, asserted by
+    test_safety_notes_stay_in_the_artifacts_not_only_the_readme.
+    """
+    pairs = _pairs(recipe)
+    artifacts = [render_cli_script(pairs, version=VERSION, generated_at=STAMP)]
+    if recipe.hcl is not None:
+        artifacts.append(render_hcl(pairs, version=VERSION, generated_at=STAMP))
+    for text in artifacts:
+        flat = _uncommented(text)
+        assert recipe.summary not in flat, "the summary belongs in the README only"
+        if recipe.docs_url:
+            assert recipe.docs_url not in flat, "the docs link belongs in the README only"
+        for item in recipe.prerequisites + recipe.caveats:
+            assert item not in flat, f"{item!r} belongs in the README only"
+
+
 def test_artifacts_point_at_the_readme():
     # The pointer is what makes relocating the detail legitimate rather than a
     # silent omission.

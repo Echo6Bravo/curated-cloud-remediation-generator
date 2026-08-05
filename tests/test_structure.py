@@ -109,7 +109,6 @@ def test_the_aws_descriptor_is_fully_populated():
     assert AWS.catalog_export_hint
     assert AWS.models_unavailable_hint
     assert AWS.cli_requirement
-    assert AWS.docs_label == "AWS docs"
 
 
 @pytest.mark.parametrize("cloud", ["", "aws/prod", "../etc", "a b", "."])

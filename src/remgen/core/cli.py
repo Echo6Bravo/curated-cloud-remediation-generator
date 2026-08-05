@@ -399,7 +399,6 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
                 generated_at=generated_at,
                 unit=unit,
                 command=provider.command,
-                docs_label=provider.docs_label,
                 scope_block=provider.hcl_scope_block,
             ),
             False,
