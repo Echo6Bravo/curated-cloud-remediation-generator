@@ -200,6 +200,49 @@ jobs:
           fi
           echo "account guard refuses the wrong account and issues no mutating calls"
 
+  canary-liveness:
+    name: Drift canary is still scheduled
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read-only, and the only reason this job needs a scope at all: the workflow's
+      # `state` field is not visible from the filesystem.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The scheduled canary exists and has not been auto-disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # This is a gate, unlike the canary it watches, and that inversion is the point.
+        # `drift-canary.yml` is the only thing checking for AWS API drift between commits,
+        # and GitHub silently disables `schedule` triggers after 60 days of repository
+        # inactivity -- precisely the dormancy the canary exists to cover. A disabled
+        # canary produces no runs, no failures and no notification, so it is
+        # indistinguishable from a canary that has been passing. The only way to notice
+        # is to assert its liveness from something that runs on every push. That is this.
+        #
+        # Re-enable a disabled workflow with:
+        #   gh workflow enable drift-canary.yml
+        run: |
+          set -euo pipefail
+          wf=".github/workflows/drift-canary.yml"
+          test -f "$wf" || { echo "::error::$wf is gone; nothing watches for upstream AWS API drift"; exit 1; }
+          grep -q 'schedule:' "$wf" || { echo "::error::$wf no longer has a schedule trigger; it only runs when a human remembers"; exit 1; }
+
+          # `|| true` on the fetch, then an explicit emptiness check: a failed API call
+          # must not be reported as a live canary, and `set -e` alone would exit with a
+          # message about curl rather than about what is actually unprotected.
+          state="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/drift-canary.yml" --jq .state 2>/dev/null || true)"
+          if [ -z "$state" ]; then
+            echo "::error::could not read the canary's state from the Actions API. This is NOT a pass -- the canary may be disabled and unwatched. Check: gh workflow list --all"
+            exit 1
+          fi
+          if [ "$state" != "active" ]; then
+            echo "::error::the drift canary is '$state', not 'active'. It is running on nothing. Re-enable it: gh workflow enable drift-canary.yml"
+            exit 1
+          fi
+          echo "drift canary is active and still scheduled"
+
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest

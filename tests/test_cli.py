@@ -8,6 +8,7 @@ output that reads correctly and does not parse.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -15,6 +16,8 @@ import pytest
 
 from remgen.providers.aws.cli import main
 from remgen.providers.aws.recipes import all_recipes
+
+from .conftest import PROVIDER_TF, TOFU
 
 GOOD = {
     "cloudtrail": {
@@ -523,24 +526,32 @@ def test_empty_script_still_parses_as_bash(env):
         assert result.returncode == 0, result.stderr
 
 
-TOFU = shutil.which("tofu") or shutil.which("terraform")
-
-
-def _tofu_check(tf_file, work):
+def _tofu_check(tf_file, work, template=None):
     """Run the real ``fmt -check`` and ``validate`` against a generated .tf file.
 
     Substring assertions cannot catch output that reads correctly and does not
     parse, so the actual toolchain is the oracle here.
+
+    ``template``, when given, is a session-initialized workspace whose ``.terraform``
+    tree is reused instead of running ``init`` here -- see
+    :func:`tests.conftest.tofu_workspace_template`. Falling back to a real ``init``
+    when it is absent keeps this function correct on its own, so a caller that forgets
+    the fixture gets a slow test rather than an unvalidated one.
     """
     work.mkdir(parents=True, exist_ok=True)
     shutil.copy(tf_file, work / "main.tf")
-    (work / "provider.tf").write_text(
-        "terraform {\n  required_providers {\n"
-        '    aws = { source = "hashicorp/aws", version = "~> 5.0" }\n'
-        "  }\n}\n"
-        'provider "aws" {\n  region = "us-east-1"\n}\n',
-        encoding="utf-8",
-    )
+    (work / "provider.tf").write_text(PROVIDER_TF, encoding="utf-8")
+
+    reused = False
+    if template is not None:
+        # symlinks=True: the tree is symlinks into the shared plugin cache, and
+        # dereferencing them would copy 663 MB per workspace -- the exact cost this
+        # avoids.
+        shutil.copytree(template / ".terraform", work / ".terraform", symlinks=True)
+        lock = template / ".terraform.lock.hcl"
+        if lock.exists():
+            shutil.copy(lock, work / ".terraform.lock.hcl")
+        reused = True
 
     fmt = subprocess.run(  # noqa: S603
         [TOFU, "fmt", "-check", "-no-color", "main.tf"],
@@ -550,15 +561,37 @@ def _tofu_check(tf_file, work):
     )
     assert fmt.returncode == 0, f"generated HCL is not canonically formatted:\n{fmt.stdout}"
 
-    init = subprocess.run(  # noqa: S603
-        [TOFU, "init", "-no-color", "-backend=false"],
-        cwd=work,
-        capture_output=True,
-        text=True,
-        timeout=300,
+    init = (
+        None
+        if reused
+        else subprocess.run(  # noqa: S603
+            [TOFU, "init", "-no-color", "-backend=false"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
     )
-    if init.returncode != 0:
-        pytest.skip(f"provider download unavailable: {init.stderr[-200:]}")
+    if init is not None and init.returncode != 0:
+        # A failed `init` used to skip. That was wrong in the case that matters: the
+        # skipif above has already confirmed a binary is present, so reaching here
+        # means the toolchain IS available and something else broke -- a bad provider
+        # constraint in the generated file, a corrupted plugin cache, a registry
+        # error. Skipping turned all of those into a green run that had validated
+        # nothing, and because the skip happens at runtime rather than at collection,
+        # CI's "assert nothing was skipped" gate could not see it either.
+        #
+        # Genuine offline development is the one case that deserves tolerance, and it
+        # is opt-in and explicit rather than inferred from a failure whose cause is
+        # unknown. `-o addopts=` is not needed: the variable is read here only.
+        if os.environ.get("REMGEN_ALLOW_TOFU_INIT_FAILURE") == "1":
+            pytest.skip(f"provider download unavailable (opted in): {init.stderr[-200:]}")
+        raise AssertionError(
+            f"`{TOFU} init` failed, so the generated HCL was never validated. A binary "
+            f"is present -- this is a real failure, not an unavailable toolchain. Set "
+            f"REMGEN_ALLOW_TOFU_INIT_FAILURE=1 to tolerate it while offline.\n"
+            f"stdout:\n{init.stdout[-1000:]}\nstderr:\n{init.stderr[-1000:]}"
+        )
 
     validate = subprocess.run(  # noqa: S603
         [TOFU, "validate", "-no-color"], cwd=work, capture_output=True, text=True
@@ -566,7 +599,7 @@ def _tofu_check(tf_file, work):
     assert validate.returncode == 0, f"generated HCL failed validate:\n{validate.stdout}"
 
 
-def _tofu_check_all(out, work_root):
+def _tofu_check_all(out, work_root, template=None):
     """Validate every generated .tf, each in its own workspace.
 
     One workspace per file, because that is how they are meant to be used: each
@@ -577,11 +610,11 @@ def _tofu_check_all(out, work_root):
     files = _tfs(out)
     assert files, "no HCL was generated"
     for index, tf_file in enumerate(files):
-        _tofu_check(tf_file, work_root / f"tf{index}")
+        _tofu_check(tf_file, work_root / f"tf{index}", template)
 
 
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
-def test_generated_hcl_is_valid_and_formatted(env):
+def test_generated_hcl_is_valid_and_formatted(env, tofu_workspace_template):
     findings = _write(env / "f.json", list(GOOD.values()) + MALICIOUS)
     _run(
         [
@@ -594,11 +627,11 @@ def test_generated_hcl_is_valid_and_formatted(env):
             "all",
         ]
     )
-    _tofu_check_all(env / "art", env / "work")
+    _tofu_check_all(env / "art", env / "work", tofu_workspace_template)
 
 
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
-def test_same_resource_name_in_two_accounts_still_validates(env):
+def test_same_resource_name_in_two_accounts_still_validates(env, tofu_workspace_template):
     """The collision case, checked by the real parser rather than by substring.
 
     ``GameScores`` in dev and prod are two different tables, but both fold to the
@@ -637,7 +670,7 @@ def test_same_resource_name_in_two_accounts_still_validates(env):
         other = "222222222222" if owner == "111111111111" else "111111111111"
         assert other not in text, f"{path.name} references another account"
 
-    _tofu_check_all(env / "art", env / "work")
+    _tofu_check_all(env / "art", env / "work", tofu_workspace_template)
 
 
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")

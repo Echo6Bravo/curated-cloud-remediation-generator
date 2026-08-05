@@ -1,0 +1,165 @@
+name: Upstream drift canary
+
+# NOT a gate. Nothing here blocks a push or a pull request, and it is deliberately a
+# separate workflow so it can never become a required check.
+#
+# What it is for: `ci.yml` already verifies every recipe against the real AWS service
+# models on each push, so drift is caught immediately *while someone is working*. This
+# repo's failure mode is the opposite one -- a curated recipe set is exactly the kind of
+# thing that sits untouched for months. AWS keeps changing its API surface during that
+# time, and a tool that emits commands against production accounts must not rot in
+# silence between commits. So this runs the same verification on a schedule, with the
+# newest botocore, and turns a positive result into a durable artifact (an issue)
+# instead of a workflow run nobody looks at.
+#
+# LIMITATION, stated because it silently defeats the whole workflow: GitHub disables
+# `schedule` triggers after 60 days of repository inactivity and does not re-enable them
+# when activity resumes. A canary this project relies on must therefore be checked for
+# liveness by something that *does* run on every push -- that is the
+# "Drift canary is still scheduled" job in `ci.yml`. Do not delete one without the other.
+on:
+  schedule:
+    # Weekly. AWS model changes relevant to four recipes do not arrive daily, and a
+    # noisy canary is one whose failures get ignored.
+    - cron: "17 6 * * 1"
+  # So a human can prove the canary works rather than assuming it does. Run this after
+  # editing the workflow; a scheduled job that has never been executed once is untested.
+  workflow_dispatch:
+  push:
+    # Validate the canary itself when it changes, and only then. Without this an error
+    # in this file would first surface a week later, in the run that was supposed to be
+    # the safety net.
+    paths:
+      - .github/workflows/drift-canary.yml
+
+permissions:
+  contents: read
+
+jobs:
+  aws-service-models:
+    name: AWS service models still match the recipes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To file/update the tracking issue. Nothing else here writes.
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+
+      - name: Install the newest published botocore
+        # Unpinned on purpose. Everywhere else a floating dependency is a liability;
+        # here it is the entire point -- the newest service models are the upstream this
+        # canary is watching. Pinning would make it verify against a snapshot and report
+        # "no drift" forever.
+        run: pip install --upgrade botocore
+
+      - name: Record which models were actually checked
+        # A version number in the log is what makes a green run auditable later. Without
+        # it, a pass proves only that *some* model set matched.
+        run: |
+          python -c "import botocore; print('botocore', botocore.__version__)"
+
+      - name: Verify recipes against the AWS API definitions
+        id: verify
+        # Exit codes are load-bearing and are handled individually below rather than
+        # collapsed into pass/fail: `verify` returns 3 for "a recipe no longer matches"
+        # and 4 for "the check could not run at all". Those need different responses --
+        # the first is a code defect, the second means this canary went blind -- and
+        # treating either as success is the specific failure this workflow exists to
+        # avoid.
+        run: |
+          set +e
+          awsremgen verify 2>&1 | tee /tmp/verify.txt
+          # PIPESTATUS, not $?: $? is `tee`'s status, which is 0 whenever the write
+          # succeeds. Reading it here would report every drift as a pass.
+          code="${PIPESTATUS[0]}"
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "verdict=ok" >> "$GITHUB_OUTPUT" ;;
+            3) echo "verdict=drift" >> "$GITHUB_OUTPUT" ;;
+            4) echo "verdict=blind" >> "$GITHUB_OUTPUT" ;;
+            *) echo "verdict=broken" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: File or update the tracking issue
+        if: steps.verify.outputs.verdict != 'ok'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.verify.outputs.verdict }}
+          CODE: ${{ steps.verify.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # An issue rather than only a red run: a scheduled failure notifies the owner by
+        # email once and then looks identical to a workflow nobody enabled. An issue
+        # persists, can be assigned, and shows up next to the code.
+        run: |
+          set -euo pipefail
+          case "$VERDICT" in
+            drift)
+              title="Drift: a curated recipe no longer matches the AWS API"
+              lead="\`awsremgen verify\` reported that at least one recipe's operation or"
+              lead="$lead parameters no longer exist in the current AWS service models."
+              lead="$lead **Do not cut a release until this is resolved** -- the affected"
+              lead="$lead recipe generates a command AWS will reject."
+              ;;
+            blind)
+              title="Drift canary is blind: no AWS service models available"
+              lead="\`awsremgen verify\` exited 4, meaning it could not check anything."
+              lead="$lead This is not a pass. Until it is fixed, nothing is watching for"
+              lead="$lead AWS API drift. Most likely cause: the \`botocore\` install step"
+              lead="$lead succeeded but shipped no \`data/\` directory, or the package name"
+              lead="$lead moved."
+              ;;
+            *)
+              title="Drift canary failed to run"
+              lead="\`awsremgen verify\` exited $CODE, which is neither success (0), drift"
+              lead="$lead (3), nor unavailable models (4). The canary itself is broken and"
+              lead="$lead is reporting nothing about upstream drift."
+              ;;
+          esac
+
+          gh label create upstream-drift --color B60205 \
+            --description "Filed by the scheduled upstream drift canary" 2>/dev/null || true
+
+          {
+            echo "$lead"
+            echo
+            echo "Detected by the scheduled canary, not by a push, so this may have been"
+            echo "true for up to a week. Run: $RUN_URL"
+            echo
+            echo '<details><summary>`awsremgen verify` output</summary>'
+            echo
+            echo '```'
+            cat /tmp/verify.txt
+            echo '```'
+            echo
+            echo '</details>'
+          } > /tmp/issue-body.md
+
+          # Match on the exact title so a recurring condition updates one issue instead
+          # of opening a new one every week -- a canary that generates weekly duplicates
+          # trains people to close it unread.
+          existing="$(gh issue list --state open --label upstream-drift \
+            --search "$title in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")] | .[0].number // empty")"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/issue-body.md
+            echo "updated issue #$existing"
+          else
+            gh issue create --title "$title" --label upstream-drift \
+              --body-file /tmp/issue-body.md
+          fi
+
+      - name: Fail the run so the canary is visibly red
+        if: steps.verify.outputs.verdict != 'ok'
+        # Last step on purpose: the issue is filed first, so a failure here cannot lose
+        # the report. Red matters because the issue is the durable record but the run
+        # list is what a maintainer glances at.
+        run: |
+          echo "::error::verify exited ${{ steps.verify.outputs.code }} (${{ steps.verify.outputs.verdict }}); see the filed issue"
+          exit 1
