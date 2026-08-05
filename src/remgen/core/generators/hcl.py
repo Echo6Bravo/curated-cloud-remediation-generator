@@ -156,8 +156,9 @@ def _align(rows: list[tuple[str, str, str]], indent: str) -> list[str]:
     lines = []
     for name, value, comment in rows:
         head = f"{indent}{name.ljust(name_w)} = "
-        lines.append(f"{head}{value.ljust(val_w)} # {comment}".rstrip() if comment
-                     else f"{head}{value}")
+        lines.append(
+            f"{head}{value.ljust(val_w)} # {comment}".rstrip() if comment else f"{head}{value}"
+        )
     return lines
 
 
@@ -174,8 +175,7 @@ def _attr_lines(recipe: Recipe, finding: Finding, indent: str = "  ") -> list[st
         raise ValueError(f"{recipe.policy_id}: no HCL target for this recipe")
 
     rows: list[tuple[str, str, str]] = [
-        (name, render_template(raw, finding), "")
-        for name, raw in recipe.hcl.attributes
+        (name, render_template(raw, finding), "") for name, raw in recipe.hcl.attributes
     ]
     # Placeholders are type-valid stubs rather than `null`, because the provider
     # rejects `null` for a required argument just as it rejects an absent one.
@@ -187,9 +187,7 @@ def _attr_lines(recipe: Recipe, finding: Finding, indent: str = "  ") -> list[st
     lines = _align(rows, indent)
 
     for block_name, block_attrs in recipe.hcl.blocks:
-        inner = [
-            (n, render_template(v, finding), c) for n, v, c in block_attrs
-        ]
+        inner = [(n, render_template(v, finding), c) for n, v, c in block_attrs]
         lines.append("")
         lines.append(f"{indent}{block_name} {{")
         lines.extend(_align(inner, indent + "  "))
@@ -381,10 +379,7 @@ def render_hcl(
             parts.append("\n" + comment_block(notes) + "\n")
             for index in group_indices:
                 parts.append(
-                    "\n"
-                    + render_one(
-                        recipe, by_index[index], labels[index], standalone=False
-                    )
+                    "\n" + render_one(recipe, by_index[index], labels[index], standalone=False)
                 )
 
     return "".join(parts)

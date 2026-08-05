@@ -63,9 +63,7 @@ def fake_models(tmp_path, monkeypatch):
         "s3",
         operations={"PutBucketVersioning": {"input": {"shape": "PutBucketVersioningRequest"}}},
         shapes={
-            "PutBucketVersioningRequest": {
-                "members": {"Bucket": {}, "VersioningConfiguration": {}}
-            }
+            "PutBucketVersioningRequest": {"members": {"Bucket": {}, "VersioningConfiguration": {}}}
         },
     )
     monkeypatch.setenv("REMGEN_BOTOCORE_DATA_DIR", str(root))

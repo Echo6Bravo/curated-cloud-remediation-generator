@@ -169,12 +169,8 @@ def tier_banner(tier: SafetyTier) -> str:
     make the tiers look like presentation rather than a rule.
     """
     label = {
-        SafetyTier.SAFEST: (
-            "SAFEST -- reversible, no data-path impact, no usage-scaled cost"
-        ),
-        SafetyTier.CAUTION: (
-            "CAUTION -- sound, but carries a commitment. Read each note."
-        ),
+        SafetyTier.SAFEST: ("SAFEST -- reversible, no data-path impact, no usage-scaled cost"),
+        SafetyTier.CAUTION: ("CAUTION -- sound, but carries a commitment. Read each note."),
         SafetyTier.DISRUPTIVE: (
             "DISRUPTIVE -- can affect availability or requires replacement. "
             "Review individually; do not run unattended."

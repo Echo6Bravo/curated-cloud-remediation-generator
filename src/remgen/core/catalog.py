@@ -110,16 +110,11 @@ class CatalogDiff:
         if self.baseline is BaselineState.UNREADABLE:
             return [
                 f"Policy catalog: {self.total} AWS policies.",
-                "  WARNING: the cached baseline exists but could not be read "
-                "(corrupt, truncated,",
-                "  or written by a different version). No comparison was possible, so "
-                "new or",
-                "  changed policies were NOT detected on this run. The baseline is being "
-                "rebuilt",
-                "  from the current catalog, which means any policy added since the last "
-                "good run",
-                "  will not be reported later either. Review the catalog manually this "
-                "once.",
+                "  WARNING: the cached baseline exists but could not be read (corrupt, truncated,",
+                "  or written by a different version). No comparison was possible, so new or",
+                "  changed policies were NOT detected on this run. The baseline is being rebuilt",
+                "  from the current catalog, which means any policy added since the last good run",
+                "  will not be reported later either. Review the catalog manually this once.",
             ]
         if self.baseline is BaselineState.ABSENT:
             return [
@@ -142,9 +137,7 @@ class CatalogDiff:
             lines.extend(f"    - {p.title}  [{p.policy_id}]" for p in self.removed)
         if self.renamed:
             lines.append(f"  {len(self.renamed)} policy/policies renamed:")
-            lines.extend(
-                f"    ~ {old!r} -> {new!r}  [{pid}]" for pid, old, new in self.renamed
-            )
+            lines.extend(f"    ~ {old!r} -> {new!r}  [{pid}]" for pid, old, new in self.renamed)
         return lines
 
 
