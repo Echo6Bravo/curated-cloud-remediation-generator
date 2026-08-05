@@ -37,9 +37,6 @@ from remgen.core.generators.common import (
 from remgen.core.layout import OutputUnit
 from remgen.core.model import Finding, Recipe, SafetyTier
 
-#: How this provider's documentation links are labelled in generated comments.
-_DOCS_LABEL = "AWS docs"
-
 #: The command that produces these scripts, named in the provenance header so a
 #: reader can regenerate the file. Hardcoded rather than threaded through from the
 #: Provider: this module *is* the AWS shell generator, so there is no other command
@@ -47,14 +44,17 @@ _DOCS_LABEL = "AWS docs"
 _COMMAND = "awsremgen"
 
 
-def aws_recipe_notes(recipe: Recipe, *, count: int | None = None, full: bool = False) -> list[str]:
-    """AWS-labelled recipe notes.
+def aws_recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
+    """Recipe notes for AWS scripts.
 
-    A thin wrapper over the shared :func:`~remgen.core.generators.common.recipe_notes`
-    that supplies the documentation label. The notes themselves are cloud-neutral;
-    only the words "AWS docs" are not.
+    Currently the shared :func:`~remgen.core.generators.common.recipe_notes`
+    unchanged: nothing in the notes is AWS-specific, because they read only
+    :class:`~remgen.core.model.Recipe` fields. Kept as a named seam anyway, so that
+    the first genuinely AWS-specific note has an obvious home that is not the shared
+    function -- adding a cloud's special case to `core` is how `core` stops being
+    cloud-neutral.
     """
-    return recipe_notes(recipe, count=count, full=full, docs_label=_DOCS_LABEL)
+    return recipe_notes(recipe, count=count)
 
 
 #: Short by design. The review checklist and the explanation of how these are

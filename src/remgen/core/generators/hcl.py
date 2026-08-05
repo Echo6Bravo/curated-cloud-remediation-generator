@@ -195,14 +195,14 @@ def _attr_lines(recipe: Recipe, finding: Finding, indent: str = "  ") -> list[st
     return lines
 
 
-def hcl_recipe_notes(recipe: Recipe, *, docs_label: str = "Provider docs") -> list[str]:
+def hcl_recipe_notes(recipe: Recipe) -> list[str]:
     """Return the comment lines describing a recipe, independent of any finding.
 
     The shared recipe notes plus the HCL-specific provider requirement and, when the
     resource block needs human completion, the reason. Emitted once per policy; see
     :func:`~remgen.core.generators.common.recipe_notes` for why.
     """
-    notes = recipe_notes(recipe, docs_label=docs_label)
+    notes = recipe_notes(recipe)
     if recipe.hcl is None:
         return notes
     notes.append(f"Requires provider >= {recipe.hcl.min_provider_version}")
@@ -228,7 +228,6 @@ def render_one(
     label: str | None = None,
     *,
     standalone: bool = True,
-    docs_label: str = "Provider docs",
 ) -> str:
     """Render the import + resource block pair for a single finding.
 
@@ -244,8 +243,6 @@ def render_one(
         standalone: When True, prefix the full recipe description so the block is
             self-contained. :func:`render_hcl` passes False because it emits that
             description once per policy.
-        docs_label: How to label the documentation link, e.g. ``"AWS docs"``.
-            Only used when ``standalone`` is True.
 
     Raises:
         ValueError: If the recipe has no HCL target.
@@ -268,10 +265,7 @@ def render_one(
     # policy by render_hcl, or by hcl_recipe_notes when rendering standalone.
     notes: list[str] = [finding.resource_id]
     if standalone:
-        notes = hcl_recipe_notes(recipe, docs_label=docs_label) + [
-            "",
-            f"Resource: {finding.resource_id}",
-        ]
+        notes = hcl_recipe_notes(recipe) + ["", f"Resource: {finding.resource_id}"]
     if not target.is_complete:
         notes.append(
             f"TODO: replace the {', '.join(target.unresolvable_names)} placeholder(s) "
@@ -299,7 +293,6 @@ def render_hcl(
     generated_at: str,
     unit: OutputUnit | None = None,
     command: str = "remgen",
-    docs_label: str = "Provider docs",
     scope_block: Callable[[OutputUnit], str] | None = None,
 ) -> str:
     """Render a complete ``.tf`` file for the given findings.
@@ -316,7 +309,6 @@ def render_hcl(
             must be configured for. ``None`` renders without a scope statement,
             which is only correct when every finding shares one scope.
         command: The command that produced this file, for the provenance header.
-        docs_label: How to label documentation links, e.g. ``"AWS docs"``.
         scope_block: Renders the cloud's scope statement and commented ``provider``
             block for ``unit``. Supplied by the provider because the block names a
             real provider type and its credential-guard argument
@@ -374,7 +366,7 @@ def render_hcl(
 
         by_index = {i: f for i, _r, f in in_tier}
         for recipe, group_indices in groups.values():
-            notes = hcl_recipe_notes(recipe, docs_label=docs_label)
+            notes = hcl_recipe_notes(recipe)
             notes.append(f"Resources below: {len(group_indices)}")
             parts.append("\n" + comment_block(notes) + "\n")
             for index in group_indices:
