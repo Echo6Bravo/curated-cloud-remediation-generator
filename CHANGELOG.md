@@ -47,7 +47,49 @@ All notable changes to this project are documented here. The format follows
   (`"AWS docs" in out or not any(r.docs_url ...)`) was passing vacuously on a fixture with no
   `docs_url`.
 
+- A failed `tofu init` in the HCL validation tests is now a **hard failure, not a skip**. The
+  `skipif` above it has already confirmed a binary is present, so reaching a failed `init` means the
+  toolchain *is* available and something else broke — a bad provider constraint in generated HCL, a
+  corrupted plugin cache, a registry error. Skipping turned every one of those into a green run that
+  had validated nothing, and because it was a *runtime* skip rather than a collection-time one, CI's
+  "assert nothing was skipped" gate could not see it either. `REMGEN_ALLOW_TOFU_INIT_FAILURE=1`
+  opts back in for genuinely offline work.
+- The generated-HCL tests now reuse one warmed OpenTofu workspace for the session instead of running
+  `init` per test, cutting the suite from **88s to 30s**. A plugin cache alone was not enough:
+  measured, a fully warm `init` still costs 16.7s because it re-verifies the 663 MB provider, versus
+  2.0s for `validate`. Copying the initialized `.terraform` tree (symlinks preserved — dereferencing
+  them would copy 663 MB per workspace) skips only the re-download and re-verification of a provider
+  that cannot change mid-session. Verified to cost no rigor: the reused workspace still rejects a
+  missing required argument and an unsupported attribute, and injecting a bogus attribute into a
+  real recipe still fails the fast path.
+
 ### Added
+- **`tests/test_recipe_set.py`** asserts invariants of the recipe *set*. Every other recipe test is
+  parametrized per recipe and therefore structurally cannot see a property that only exists across
+  two entries — a duplicate policy id, two recipes claiming one HCL resource type, a title that
+  makes two remediations indistinguishable in the run README. Each of the 15 invariants was verified
+  by mutation: the recipe set was edited to violate it and the test confirmed to fail, so none is a
+  set-level assertion that cannot fail. That sweep found three of its own assertions to be vacuous —
+  they re-derived `safety_tier`/`safety_notes`, which are computed properties rather than authored
+  fields — and they were replaced with assertions over authored data (a reversal must name the same
+  service and subcommand it undoes; an irreversible recipe must say in `caveats` what is permanent;
+  unbounded cost must come with a way to bound it). It also surfaced that `CostImpact.LOW` does not
+  downgrade a recipe out of `safest`, which is now stated as an assertion rather than left implicit.
+- **A scheduled upstream-drift canary** (`.github/workflows/drift-canary.yml`), weekly and
+  deliberately **not** a gate. `ci.yml` already verifies recipes against the real AWS service models
+  on every push, which covers drift while someone is working; this covers the opposite failure mode,
+  a curated recipe set sitting untouched for months while AWS keeps changing its API. It installs
+  the newest `botocore` unpinned — the one place a floating dependency is the point — and files or
+  updates a tracking issue rather than only reddening a run nobody watches. Exit codes are handled
+  individually, not collapsed to pass/fail: 3 ("a recipe no longer matches") is a code defect while
+  4 ("could not check") means the canary went blind, and reporting either as success is the specific
+  thing it exists to prevent.
+- **CI job `canary-liveness`**, blocking, which asserts the canary is still `active`. GitHub
+  silently disables `schedule` triggers after 60 days of repository inactivity — exactly the
+  dormancy the canary exists to cover — and a disabled workflow produces no runs, no failures and no
+  notification, making it indistinguishable from one that has been passing. The only way to notice
+  is from something that runs on every push. An unreachable Actions API also fails rather than
+  reading as a live canary.
 - **`--format`** selects which output formats to write, as a comma-separated list (`cli`, `hcl`,
   `all`; default `all`). A value list rather than a boolean per format: a pair of booleans has an
   ambiguous "neither passed" state, and per-format flag *names* would not survive a second cloud.

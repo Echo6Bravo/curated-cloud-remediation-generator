@@ -100,9 +100,27 @@ CI runs both. Formatting is therefore mechanical: do not spend review comments o
 hand-format against it. It provably does not change generated output, so reformatting a generator is
 safe.
 
-The OpenTofu-backed tests are slow (~110s total) because they run a real binary. Do not skip them
-locally and do not narrow the suite to the tests you expect to be affected — the ones you did not
-expect to be affected are the point.
+The OpenTofu-backed tests run a real binary, so the suite takes ~30s rather than a few seconds. That
+is already the fast path: one warmed workspace is shared for the session, because a fully warm `tofu
+init` still costs 16.7s per workspace while `validate` costs 2.0s. Do not skip these tests locally
+and do not narrow the suite to the ones you expect to be affected — the ones you did not expect to be
+affected are the point.
+
+The first run downloads the AWS provider (~663 MB) into `~/.cache/remgen-test-tofu-plugins`, and
+later runs reuse it. `REMGEN_TEST_TOFU_CACHE` moves it. If you are offline and `init` cannot reach
+the registry, the tests **fail** rather than skip — a skip would report green having validated
+nothing. `REMGEN_ALLOW_TOFU_INIT_FAILURE=1` opts into skipping, deliberately, for that case only.
+
+### Adding a recipe
+
+`tests/test_recipe_set.py` holds the invariants a new entry has to satisfy, and each one states what
+breaks if it does not. Read the failure message before working around it: two recipes on one HCL
+resource type, for example, is currently a real defect that `tofu validate` reports as **valid**.
+
+When adding an invariant there, check that it constrains an *authored* field. `safety_tier` and
+`safety_notes` are computed properties, so an assertion about them re-implements the derivation and
+passes unconditionally — three of the original invariants did exactly that and had to be rewritten.
+Prove a new one fails by mutating the recipe set to violate it.
 
 ## Scope
 
