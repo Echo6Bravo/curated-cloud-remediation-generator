@@ -32,16 +32,40 @@ jobs:
           tofu_version: 1.12.5
       - name: Install
         run: pip install -e '.[dev]'
-      - name: Confirm the OpenTofu-backed tests will actually RUN, not skip
-        # Those tests are skipif-gated on a tofu/terraform binary being present. A silent skip
-        # would turn the strongest gate in the suite -- real parser validation of generated HCL --
-        # into a no-op while CI still reported green. Fail loudly instead.
+      - name: Install botocore for real-service-model verification
+        # botocore is NOT a runtime dependency and must never become one -- the tool reads
+        # service-model JSON from disk. It is installed here only so that
+        # test_curated_recipes_match_real_aws_models runs instead of skipping. That test is
+        # the one that catches a recipe written from a stale memory of the API.
+        run: pip install botocore
+      - name: Confirm the skipif-gated tests will actually RUN, not skip
+        # Two suites are skipif-gated on external things being present, and both are the
+        # strongest gates here: real-parser validation of generated HCL (needs tofu) and
+        # recipe-vs-real-AWS-model verification (needs service models). A silent skip turns
+        # either into a no-op while CI still reports green, so assert their preconditions.
         run: |
           command -v tofu >/dev/null || { echo "::error::tofu missing; HCL validation tests would silently skip"; exit 1; }
           tofu version
+          python -c "import sys; sys.path.insert(0,'src'); from remgen import drift; d=drift.find_model_dir(); print('service models:', d); sys.exit(0 if d else 1)" \
+            || { echo "::error::no AWS service models found; recipe-vs-API test would silently skip"; exit 1; }
       - name: Test suite
         # No -k narrowing, no -x. The tests you did not expect to be affected are the point.
-        run: pytest -v
+        # -rs surfaces skip reasons; --strict-markers keeps a typo'd marker from silently
+        # deselecting a test.
+        run: pytest -v -rs --strict-markers
+      - name: Assert nothing was skipped
+        # A skip that appears later -- a new skipif, a missing optional tool -- would otherwise
+        # reduce coverage invisibly. This is the check that noticed 1 skipped test in the first
+        # CI run of this repo.
+        run: |
+          set -o pipefail
+          pytest -rs 2>&1 | tee /tmp/pytest.out
+          if grep -qE '[0-9]+ skipped' /tmp/pytest.out; then
+            echo "::error::tests were skipped in CI; coverage is lower than it appears"
+            grep -E 'SKIPPED' /tmp/pytest.out || true
+            exit 1
+          fi
+          echo "no tests skipped"
 
   lint:
     name: Lint (ruff)
