@@ -1,0 +1,117 @@
+{
+  "generator": "remgen (curated-aws-remediation-generator)",
+  "version": "0.1.0",
+  "generated_at": "2026-08-05T13:30:45+00:00",
+  "applied": false,
+  "notes": "Each file targets one AWS account (HCL: one account and region) and must be run with credentials for it. Nothing here has been applied to AWS.",
+  "accounts": [
+    "111111111111",
+    "222222222222"
+  ],
+  "policies": {
+    "284b1210-a31e-48ce-97af-f4d825ef132d": {
+      "title": "S3 Bucket versioning is not enabled",
+      "safety_tier": "caution",
+      "api": "s3.PutBucketVersioning",
+      "reversible": false,
+      "hcl_resource_type": "aws_s3_bucket_versioning"
+    },
+    "468d7976-445f-44c2-b9fb-45fb1005f373": {
+      "title": "DynamoDB Table delete protection is not enabled",
+      "safety_tier": "caution",
+      "api": "dynamodb.UpdateTable",
+      "reversible": true,
+      "hcl_resource_type": "aws_dynamodb_table"
+    },
+    "4d6662cd-9f34-41eb-b152-f24c692d4fbf": {
+      "title": "RDS Instance delete protection is not enabled",
+      "safety_tier": "caution",
+      "api": "rds.ModifyDBInstance",
+      "reversible": true,
+      "hcl_resource_type": "aws_db_instance"
+    },
+    "8d1140ba-c917-44d7-b2ea-084f9dffe707": {
+      "title": "CloudTrail S3 Bucket log file validation is not enabled",
+      "safety_tier": "safest",
+      "api": "cloudtrail.UpdateTrail",
+      "reversible": true,
+      "hcl_resource_type": "aws_cloudtrail"
+    },
+    "995e8d78-940a-45bf-bac1-61a1fdb00d7a": {
+      "title": "KMS Key automatic key rotation is not enabled",
+      "safety_tier": "caution",
+      "api": "kms.EnableKeyRotation",
+      "reversible": false,
+      "hcl_resource_type": "aws_kms_key"
+    }
+  },
+  "files": [
+    {
+      "file": "remediate-111111111111-all-regions.sh",
+      "format": "awscli",
+      "account_id": "111111111111",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 4,
+      "policy_counts": {
+        "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
+        "468d7976-445f-44c2-b9fb-45fb1005f373": 1,
+        "8d1140ba-c917-44d7-b2ea-084f9dffe707": 1,
+        "995e8d78-940a-45bf-bac1-61a1fdb00d7a": 1
+      }
+    },
+    {
+      "file": "remediate-222222222222-all-regions.sh",
+      "format": "awscli",
+      "account_id": "222222222222",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 2,
+      "policy_counts": {
+        "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
+        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1
+      }
+    },
+    {
+      "file": "remediate-111111111111-us-east-1.tf",
+      "format": "hcl",
+      "account_id": "111111111111",
+      "region": "us-east-1",
+      "part": null,
+      "total_parts": 1,
+      "remediations": 3,
+      "policy_counts": {
+        "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
+        "468d7976-445f-44c2-b9fb-45fb1005f373": 1,
+        "8d1140ba-c917-44d7-b2ea-084f9dffe707": 1
+      }
+    },
+    {
+      "file": "remediate-111111111111-us-west-2.tf",
+      "format": "hcl",
+      "account_id": "111111111111",
+      "region": "us-west-2",
+      "part": null,
+      "total_parts": 1,
+      "remediations": 1,
+      "policy_counts": {
+        "995e8d78-940a-45bf-bac1-61a1fdb00d7a": 1
+      }
+    },
+    {
+      "file": "remediate-222222222222-us-east-1.tf",
+      "format": "hcl",
+      "account_id": "222222222222",
+      "region": "us-east-1",
+      "part": null,
+      "total_parts": 1,
+      "remediations": 2,
+      "policy_counts": {
+        "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
+        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1
+      }
+    }
+  ]
+}

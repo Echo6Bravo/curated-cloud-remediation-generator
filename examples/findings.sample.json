@@ -1,0 +1,79 @@
+{
+  "findings": [
+    {
+      "policyId": "8d1140ba-c917-44d7-b2ea-084f9dffe707",
+      "resourceId": "org-audit-trail",
+      "resourceName": "org-audit-trail",
+      "region": "us-east-1",
+      "accountId": "111111111111"
+    },
+    {
+      "policyId": "468d7976-445f-44c2-b9fb-45fb1005f373",
+      "resourceId": "checkout-sessions",
+      "resourceName": "checkout-sessions",
+      "region": "us-east-1",
+      "accountId": "111111111111"
+    },
+    {
+      "policyId": "284b1210-a31e-48ce-97af-f4d825ef132d",
+      "resourceId": "acme-web-assets-use1",
+      "resourceName": "acme-web-assets-use1",
+      "region": "us-east-1",
+      "accountId": "111111111111"
+    },
+    {
+      "policyId": "995e8d78-940a-45bf-bac1-61a1fdb00d7a",
+      "resourceId": "3f9c0a11-6d2e-4b8a-9c77-2b1e5d4a8f60",
+      "resourceName": "alias/reporting-exports",
+      "region": "us-west-2",
+      "accountId": "111111111111"
+    },
+    {
+      "policyId": "4d6662cd-9f34-41eb-b152-f24c692d4fbf",
+      "resourceId": "billing-primary",
+      "resourceName": "billing-primary",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+    {
+      "policyId": "284b1210-a31e-48ce-97af-f4d825ef132d",
+      "resourceId": "acme-invoice-archive",
+      "resourceName": "acme-invoice-archive",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+
+    {
+      "_comment": "Duplicate of the checkout-sessions finding above. Real exports repeat a finding when the same violation is seen in two scans, or when a record is joined across views. remgen collapses it and reports the count -- emitting two HCL blocks for one resource would not validate.",
+      "policyId": "468d7976-445f-44c2-b9fb-45fb1005f373",
+      "resourceId": "checkout-sessions",
+      "resourceName": "checkout-sessions",
+      "region": "us-east-1",
+      "accountId": "111111111111"
+    },
+
+    {
+      "_comment": "A real policy with no curated recipe. Reported as unsupported rather than guessed at -- coverage being partial is the documented behavior, and -v lists them.",
+      "policyId": "c1f0a4d2-77b3-4e59-9a10-8e2d63b4c7f1",
+      "resourceId": "public-ingress-sg",
+      "resourceName": "public-ingress-sg",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+
+    {
+      "_comment": "REJECTED ON PURPOSE. The resource id carries shell metacharacters. remgen allowlists identifiers and refuses to render rather than trying to escape -- a rejected finding is a visible gap, an escaped one is a surprise waiting in someone's shell.",
+      "policyId": "284b1210-a31e-48ce-97af-f4d825ef132d",
+      "resourceId": "acme-logs; aws s3 rb s3://acme-prod --force",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+
+    {
+      "_comment": "REJECTED ON PURPOSE. No region. Region is required because it is part of the command and part of the file scope; defaulting it would send a remediation somewhere nobody asked for.",
+      "policyId": "995e8d78-940a-45bf-bac1-61a1fdb00d7a",
+      "resourceId": "8a2b1c40-5e77-4d19-b3f6-0c9e7a2d5b81",
+      "accountId": "111111111111"
+    }
+  ]
+}

@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **A committed sample run under `examples/`** — the input findings, the console output verbatim,
+  and every artifact produced, with [`examples/README.md`](./examples/README.md) explaining why one
+  input yields five artifacts, what a `TODO` placeholder means, and what happens to a malformed
+  finding. The fixture deliberately includes a duplicate record, a policy with no recipe, a
+  `resource_id` carrying shell metacharacters, and a record missing its region, so the sample shows
+  the rejection and reconciliation behavior rather than only the happy path.
+- **CI job `sample`**, blocking, which regenerates the sample and diffs it against what is
+  committed — normalizing only the generation timestamp. Documentation that claims to be real
+  output is mechanically checkable, so it is checked: a sample that silently describes an older
+  version is worse than none, because a reader cannot tell. The job also runs `bash -n` and real
+  `tofu fmt -check` / `init` / `validate` over the committed artifacts, and executes the
+  wrong-account guard against a stub `aws` to prove it exits non-zero having issued no mutating
+  calls. Every check was verified with a negative control that breaks the guarded property.
+- `docs-refs` now asserts the sample's files exist and resolves relative links from inside
+  `examples/` (`../SECURITY.md` only resolves relative to the linking document).
+
+### Notes
+- `examples/sample-output/` is *not* named `artifacts/` because `.gitignore` matches `artifacts/` at
+  any depth; that name would have committed nothing while every doc still pointed at it.
+
 ## [0.1.0] — 2026-08-04
 
 Initial release. Pre-1.0: the CLI surface and recipe schema may still change.
