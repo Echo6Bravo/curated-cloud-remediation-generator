@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remgen"
+version = "0.1.0"
+description = "Generates review-ready aws-cli and OpenTofu/Terraform remediation artifacts for a curated subset of Tenable Cloud Security AWS policies."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Tenable, Inc." }]
+keywords = ["aws", "tenable", "cloud-security", "remediation", "opentofu", "terraform"]
+
+# ---------------------------------------------------------------------------
+# ZERO required runtime dependencies. Everything below is stdlib-only.
+#
+# AWS API shapes are read from the botocore service models that ship inside
+# AWS CLI v2 (or an installed botocore, if present). Neither is imported as a
+# Python dependency; the JSON model files are read from disk. See remgen.drift.
+# ---------------------------------------------------------------------------
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed to run the test suite and linters, never to use the tool.
+dev = [
+    "pytest>=8.0,<9",
+    "ruff>=0.6,<1",
+    "bandit>=1.7,<2",
+]
+
+[project.scripts]
+remgen = "remgen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Echo6Bravo/curated-aws-remediation-generator"
+Issues = "https://github.com/Echo6Bravo/curated-aws-remediation-generator/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "RET", "SIM"]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "E501"]

@@ -1,0 +1,146 @@
+name: CI
+
+# Every job here is a BLOCKING gate. This tool emits commands people run against production
+# AWS accounts, so a green CI has to mean something. Actions are pinned to commit SHAs rather
+# than moving tags -- a tag can be repointed at new code after review.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and current. requires-python is >=3.10, so the floor must actually be tested --
+        # claiming support for a version nothing runs on is an untested claim.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.5
+      - name: Install
+        run: pip install -e '.[dev]'
+      - name: Confirm the OpenTofu-backed tests will actually RUN, not skip
+        # Those tests are skipif-gated on a tofu/terraform binary being present. A silent skip
+        # would turn the strongest gate in the suite -- real parser validation of generated HCL --
+        # into a no-op while CI still reported green. Fail loudly instead.
+        run: |
+          command -v tofu >/dev/null || { echo "::error::tofu missing; HCL validation tests would silently skip"; exit 1; }
+          tofu version
+      - name: Test suite
+        # No -k narrowing, no -x. The tests you did not expect to be affected are the point.
+        run: pytest -v
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -e '.[dev]'
+      - run: ruff check --output-format=github .
+
+  sast:
+    name: SAST (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -e '.[dev]'
+      - name: bandit on shipped code
+        # src/ only: asserts in tests are intentional, but an assert in runtime code is not a
+        # guard -- `python -O` strips it, leaving the invariant unenforced in exactly the
+        # optimized build where violating it does damage.
+        run: bandit -q -r src/
+
+  docs-refs:
+    name: Docs references resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every referenced repo file exists
+        # Three source modules point at ROADMAP.md and the README links several docs. A dangling
+        # reference is a real defect: it sends a reader looking for a rationale that isn't there.
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          errs = []
+          # 1. Files named from source comments/docstrings and from doc links.
+          for f in ("README.md", "ROADMAP.md", "NOTICE.md", "CHANGELOG.md",
+                    "CONTRIBUTING.md", "SECURITY.md", "LICENSE"):
+              if not pathlib.Path(f).exists():
+                  errs.append(f"missing required file: {f}")
+          # 2. Relative markdown links in the docs must resolve.
+          for doc in pathlib.Path(".").glob("*.md"):
+              text = doc.read_text()
+              for target in re.findall(r'\]\(\.{0,2}/?([A-Za-z0-9_./-]+\.md)\)', text):
+                  if not (doc.parent / target).exists():
+                      errs.append(f"{doc.name}: broken link -> {target}")
+          # 3. Any src file citing a doc must have that doc present.
+          for py in pathlib.Path("src").rglob("*.py"):
+              for ref in re.findall(r'\b([A-Z][A-Z0-9_]*\.md)\b', py.read_text()):
+                  if not pathlib.Path(ref).exists():
+                      errs.append(f"{py}: cites missing {ref}")
+          # 4. Paths the docs point readers at must exist.
+          for src_path in ("src/remgen/sources.py", "src/remgen/recipes/aws_curated.py",
+                           "src/remgen/generators/__init__.py"):
+              if not pathlib.Path(src_path).exists():
+                  errs.append(f"docs reference missing path: {src_path}")
+          if errs:
+              print("doc reference check FAILED:")
+              for e in errs: print("  -", e)
+              sys.exit(1)
+          print("all doc references resolve")
+          PY
+
+  claims:
+    name: README claims match the code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Recipe count and tier split are not stale
+        # The README states a recipe count and a per-tier split. Those are exactly the kind of
+        # number that silently rots the next time a recipe is added, turning documentation into
+        # a confident false claim.
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          sys.path.insert(0, "src")
+          from collections import Counter
+          from remgen.recipes.aws_curated import RECIPES
+          tiers = Counter(str(getattr(r.safety_tier, "value", r.safety_tier)) for r in RECIPES)
+          readme = pathlib.Path("README.md").read_text()
+          errs = []
+          n = len(RECIPES)
+          if f"ships **{n} recipes**" not in readme:
+              errs.append(f"README does not state the real recipe count ({n})")
+          if f"Of the {n} shipped recipes" not in readme:
+              errs.append(f"README summary line does not state {n} recipes")
+          for tier, count in tiers.items():
+              if f"**{count} is `{tier}`**" not in readme and f"**{count} are `{tier}`**" not in readme:
+                  errs.append(f"README does not state {count} recipe(s) at tier '{tier}'")
+          if errs:
+              print("README claim check FAILED:")
+              for e in errs: print("  -", e)
+              sys.exit(1)
+          print(f"README claims match: {n} recipes, tiers {dict(tiers)}")
+          PY
