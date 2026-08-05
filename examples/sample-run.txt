@@ -1,5 +1,5 @@
 
-remgen 0.1.0 -- generated 2026-08-05T13:30:45+00:00
+awsremgen 0.1.0 -- generated 2026-08-05T15:39:05+00:00
 
   Records read:         10
     usable findings:    8
@@ -9,21 +9,22 @@ remgen 0.1.0 -- generated 2026-08-05T13:30:45+00:00
   Remediations written: 6
     no recipe:          1
 
-  Output: artifacts  (7 file(s), 29.5 KB)
-  2 .sh file(s) across 2 account(s).
-  Split by account because neither format can target more than one account at a time.
+  Output: artifacts  (7 file(s), 30.3 KB)
+  Formats: cli, hcl
+  2 .sh file(s) across 2 accounts in aws.
+  Split by account because no format can target more than one account at a time.
   Each file must be run with credentials for the account in its name.
-  3 .tf file(s) across 2 account(s).
-  Split by account because neither format can target more than one account at a time.
-  Split by region because the AWS provider is region-scoped.
+  3 .tf file(s) across 2 accounts in aws.
+  Split by account because no format can target more than one account at a time.
+  Split by region because this cloud's Terraform provider is region-scoped.
   Each file must be run with credentials for the account in its name.
-    remediate-111111111111-all-regions.sh  (4.1 KB)
-    remediate-222222222222-all-regions.sh  (3.0 KB)
-    remediate-111111111111-us-east-1.tf  (4.6 KB)
-    remediate-111111111111-us-west-2.tf  (2.0 KB)
-    remediate-222222222222-us-east-1.tf  (3.6 KB)
-    README.md  (8.5 KB)
-    manifest.json  (3.5 KB)
+    remediate-aws-111111111111-all-regions.sh  (4.1 KB)
+    remediate-aws-222222222222-all-regions.sh  (3.0 KB)
+    remediate-aws-111111111111-us-east-1.tf  (4.6 KB)
+    remediate-aws-111111111111-us-west-2.tf  (2.0 KB)
+    remediate-aws-222222222222-us-east-1.tf  (3.6 KB)
+    README.md  (8.7 KB)
+    manifest.json  (4.2 KB)
 
   Note: 3 HCL block(s) contain TODO placeholders for provider-required
   arguments that findings do not carry. Complete them before applying.
@@ -36,4 +37,4 @@ remgen 0.1.0 -- generated 2026-08-05T13:30:45+00:00
   [record 8] resource_id: 'acme-logs; aws s3 rb s3://acme-prod --force' contains characters that are not permitted in an AWS identifier. Refusing to generate rather than ...
   [record 9] missing required field(s): region
 
-Review both files before running anything. This tool made no AWS changes.
+Review the output before running anything. This tool made no AWS changes.

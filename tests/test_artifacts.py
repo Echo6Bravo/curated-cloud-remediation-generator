@@ -15,12 +15,13 @@ import re
 
 import pytest
 
-from remgen.artifacts import render_manifest, render_readme
-from remgen.generators.awscli import render_cli_script
-from remgen.generators.hcl import render_hcl
-from remgen.layout import Format, plan_units
-from remgen.model import ApiCall, CostImpact, Finding, HclTarget, Recipe
-from remgen.recipes import all_recipes
+from remgen.core.artifacts import render_manifest, render_readme
+from remgen.core.generators.hcl import render_hcl
+from remgen.core.layout import Format, plan_units
+from remgen.core.model import ApiCall, CostImpact, Finding, HclTarget, Recipe
+from remgen.providers.aws import AWS
+from remgen.providers.aws.recipes import all_recipes
+from remgen.providers.aws.shell import render_cli_script
 
 VERSION = "0.0.0-test"
 STAMP = "2026-01-01T00:00:00Z"
@@ -63,8 +64,23 @@ def _pairs(recipe=None, specs=(("b1", "us-east-1", "111111111111"),)):
     ]
 
 
+def _plan(pairs, fmt, **kwargs):
+    """Plan output units with the AWS provider's own facts.
+
+    Taken from the descriptor rather than restated, so a test cannot assert a split
+    the shipped provider would not actually produce.
+    """
+    kwargs.setdefault("cloud", AWS.cloud)
+    kwargs.setdefault("scope_noun", AWS.credential_scope_noun)
+    kwargs.setdefault("extension", AWS.shell_extension)
+    kwargs.setdefault(
+        "provider_is_region_scoped", AWS.hcl_provider_is_region_scoped
+    )
+    return plan_units(pairs, fmt, **kwargs)
+
+
 def _units(pairs):
-    return plan_units(pairs, Format.AWSCLI) + plan_units(pairs, Format.HCL)
+    return _plan(pairs, Format.CLI) + _plan(pairs, Format.HCL)
 
 
 def _uncommented(text: str) -> str:
@@ -81,8 +97,19 @@ def _uncommented(text: str) -> str:
 def _readme(pairs):
     units = _units(pairs)
     return render_readme(
-        units, version=VERSION, generated_at=STAMP, count=len(pairs)
+        units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs)
     )
+
+
+def _unwrapped(text: str) -> str:
+    """Collapse whitespace so a sentence can be matched across a line break.
+
+    The README is markdown wrapped to a column, so an assertion on a phrase that
+    happens to straddle a wrap point fails while the prose is entirely correct.
+    Collapsing first means these tests check what the document says rather than how
+    it was filled.
+    """
+    return " ".join(text.split())
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +165,7 @@ def test_artifacts_point_at_the_readme():
     # The pointer is what makes relocating the detail legitimate rather than a
     # silent omission.
     pairs = _pairs()
-    units = plan_units(pairs, Format.AWSCLI)
+    units = _plan(pairs, Format.CLI)
     script = render_cli_script(
         pairs, version=VERSION, generated_at=STAMP, unit=units[0]
     )
@@ -181,30 +208,57 @@ def test_output_grows_sublinearly_with_resource_count():
 
 
 def test_readme_states_that_nothing_was_applied():
-    text = _readme(_pairs())
+    text = _unwrapped(_readme(_pairs()))
     assert "modify AWS resources" in text
     assert "Nothing has been applied" in text
 
 
 def test_readme_explains_why_output_is_split_and_the_credential_requirement():
     specs = [("b1", "us-east-1", "111111111111"), ("b2", "us-east-1", "222222222222")]
-    text = _readme(_pairs(specs=specs))
-    assert "2 AWS account(s)" in text
+    text = _unwrapped(_readme(_pairs(specs=specs)))
+    assert "2 AWS accounts" in text
     assert "credentials for the account named in its filename" in text
 
 
+def test_readme_uses_the_clouds_own_vocabulary_not_a_generic_word():
+    # A correct split described in the wrong cloud's terms reads as a bug, and
+    # "credential scope" is not a phrase any cloud's own docs use.
+    text = _unwrapped(_readme(_pairs()))
+    assert "AWS remediation artifacts" in text
+    assert "awsremgen" in text
+    assert "cloud resources" not in text
+
+
 def test_readme_states_the_partial_coverage_and_best_effort_position():
-    text = _readme(_pairs())
+    text = _unwrapped(_readme(_pairs()))
     assert "intentionally partial" in text
     assert "Best effort" in text
 
 
 def test_readme_records_the_review_checklist_and_both_toolchains():
-    text = _readme(_pairs())
+    text = _unwrapped(_readme(_pairs()))
     assert "Review checklist" in text
+    # The version requirement comes from the provider: "install the AWS CLI" is not
+    # actionable, and which versions are tested is a claim only the provider makes.
     assert "AWS CLI v2" in text
     assert "OpenTofu >= 1.6" in text
     assert "0 to add" in text  # the plan assertion that catches a wrong import id
+
+
+def test_readme_refuses_to_describe_units_from_another_cloud():
+    """One README describes one cloud, so a mixed set must fail rather than render.
+
+    Every cloud-specific sentence -- the CLI to install, the word for a credential
+    scope, the run command -- would be wrong for some of the files the document
+    indexes. A reader following AWS instructions for an Azure artifact is a worse
+    outcome than no README at all, so this is an error and not a warning.
+    """
+    pairs = _pairs()
+    units = _plan(pairs, Format.CLI) + _plan(pairs, Format.CLI, cloud="azure")
+    with pytest.raises(ValueError, match="one cloud"):
+        render_readme(
+            units, provider=AWS, version=VERSION, generated_at=STAMP, count=len(pairs)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +272,26 @@ def test_manifest_is_valid_json_and_indexes_every_file():
     data = json.loads(render_manifest(units, version=VERSION, generated_at=STAMP))
     assert [entry["file"] for entry in data["files"]] == [u.filename for u in units]
     assert data["applied"] is False
-    assert data["accounts"] == ["111111111111", "222222222222"]
+    assert data["scopes"] == ["111111111111", "222222222222"]
+    assert data["clouds"] == ["aws"]
+    # The path, not just the name: a consumer must be able to open the file without
+    # reconstructing the layout rule that put it in a per-cloud directory.
+    assert [entry["path"] for entry in data["files"]] == [
+        u.relative_path for u in units
+    ]
 
 
 def test_manifest_records_scope_and_counts_per_file():
     specs = [("b1", "us-east-1", "111111111111"), ("b2", "us-east-1", "111111111111")]
-    units = plan_units(_pairs(specs=specs), Format.HCL)
+    units = _plan(_pairs(specs=specs), Format.HCL)
     data = json.loads(render_manifest(units, version=VERSION, generated_at=STAMP))
     entry = data["files"][0]
-    assert entry["account_id"] == "111111111111"
+    # A cloud-neutral key with the cloud's own word beside it, so a consumer reads
+    # one field across every cloud instead of probing for "account_id" or
+    # "subscription_id".
+    assert entry["scope_id"] == "111111111111"
+    assert entry["scope_noun"] == "account"
+    assert entry["cloud"] == "aws"
     assert entry["region"] == "us-east-1"
     assert entry["remediations"] == 2
     assert entry["policy_counts"] == {"p1": 2}
@@ -252,14 +317,14 @@ def test_manifest_region_is_null_when_a_file_spans_regions():
     # A CLI script legitimately spans regions. Recording "all-regions" as if it were
     # a region would mislead a pipeline reading this field.
     specs = [("b1", "us-east-1", "1"), ("b2", "eu-west-1", "1")]
-    units = plan_units(_pairs(specs=specs), Format.AWSCLI)
+    units = _plan(_pairs(specs=specs), Format.CLI)
     data = json.loads(render_manifest(units, version=VERSION, generated_at=STAMP))
     assert data["files"][0]["region"] is None
 
 
 def test_manifest_counts_reconcile_with_the_units():
     specs = [(f"b{i}", "us-east-1", "111111111111") for i in range(25)]
-    units = plan_units(_pairs(specs=specs), Format.HCL, max_per_file=10)
+    units = _plan(_pairs(specs=specs), Format.HCL, max_per_file=10)
     data = json.loads(render_manifest(units, version=VERSION, generated_at=STAMP))
     assert sum(entry["remediations"] for entry in data["files"]) == 25
     assert [entry["part"] for entry in data["files"]] == [1, 2, 3]
@@ -278,7 +343,7 @@ def test_size_forecast_does_not_under_predict_a_real_run():
     measured run for exactly this reason -- per-policy prose amortizes as a run
     grows, so real B/finding falls with scale while the estimate stays flat.
     """
-    from remgen.cli import estimate_output_bytes
+    from remgen.core.cli import estimate_output_bytes
 
     specs = [
         (f"b{i}", ["us-east-1", "eu-west-1"][i % 2], f"{111111111111 + i % 4}")
@@ -286,8 +351,8 @@ def test_size_forecast_does_not_under_predict_a_real_run():
     ]
     pairs = _pairs(specs=specs)
     actual = 0
-    for fmt, render in ((Format.AWSCLI, render_cli_script), (Format.HCL, render_hcl)):
-        for unit in plan_units(pairs, fmt):
+    for fmt, render in ((Format.CLI, render_cli_script), (Format.HCL, render_hcl)):
+        for unit in _plan(pairs, fmt):
             actual += len(
                 render(
                     list(unit.pairs),

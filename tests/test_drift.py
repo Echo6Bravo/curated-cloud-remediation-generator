@@ -11,10 +11,10 @@ import json
 
 import pytest
 
-from remgen import drift
-from remgen.drift import DriftStatus, verify_all, verify_recipe
-from remgen.model import ApiCall, Recipe
-from remgen.recipes import all_recipes
+from remgen.core.model import ApiCall, Recipe
+from remgen.providers.aws import drift
+from remgen.providers.aws.drift import DriftStatus, verify_all, verify_recipe
+from remgen.providers.aws.recipes import all_recipes
 
 
 @pytest.fixture(autouse=True)

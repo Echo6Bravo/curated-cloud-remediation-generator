@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from remgen.model import Finding, Policy, UnsafeIdentifierError
+from remgen.core.model import Finding, Policy, UnsafeIdentifierError
 
 #: Keys accepted for each Finding field, in priority order. Real exports differ
 #: in casing and naming between API versions and CSV/JSON paths, so a small

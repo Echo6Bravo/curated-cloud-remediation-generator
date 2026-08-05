@@ -17,6 +17,11 @@ Resolution order for the model directory:
 
 If none are found, verification reports ``UNAVAILABLE`` rather than passing. A
 check that cannot run must never look like a check that passed.
+
+:class:`~remgen.core.drift.DriftResult` and its status enum are defined in
+``core`` because the CLI's reporting and exit codes are shared across clouds.
+Everything about *producing* the answer is here, because nothing about
+``service-2.json`` generalizes to any other cloud.
 """
 
 from __future__ import annotations
@@ -26,43 +31,11 @@ import gzip
 import json
 import os
 import shutil
-from dataclasses import dataclass
-from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 
-from remgen.model import Recipe
-
-
-class DriftStatus(str, Enum):
-    """Outcome of verifying one recipe against the AWS service model."""
-
-    OK = "ok"
-    #: The operation no longer exists in the service model.
-    OPERATION_MISSING = "operation_missing"
-    #: The operation exists but one or more parameters do not.
-    PARAMETER_MISSING = "parameter_missing"
-    #: No service model found for the service at all.
-    SERVICE_MISSING = "service_missing"
-    #: No model source available; the check could not be performed.
-    UNAVAILABLE = "unavailable"
-
-
-@dataclass(frozen=True)
-class DriftResult:
-    """Result of verifying a single recipe."""
-
-    policy_id: str
-    policy_title: str
-    service: str
-    operation: str
-    status: DriftStatus
-    detail: str = ""
-    api_version: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.status is DriftStatus.OK
+from remgen.core.drift import DriftResult, DriftStatus
+from remgen.core.model import Recipe
 
 
 class ModelSourceNotFound(RuntimeError):

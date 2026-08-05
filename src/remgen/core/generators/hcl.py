@@ -4,11 +4,11 @@ The single most important thing this module gets right:
 
     Terraform and OpenTofu only manage resources that exist in state.
 
-A remediation targets a resource that already exists in AWS. If that resource was
-not created by the same IaC workspace, emitting a bare ``resource`` block does not
-fix it -- the plan tries to *create a second one*, and either fails on a name
-conflict or provisions a duplicate. So every resource block emitted here is paired
-with an ``import`` block. Import is mandatory, not an optional nicety.
+A remediation targets a resource that already exists in the cloud. If that
+resource was not created by the same IaC workspace, emitting a bare ``resource``
+block does not fix it -- the plan tries to *create a second one*, and either fails
+on a name conflict or provisions a duplicate. So every resource block emitted here
+is paired with an ``import`` block. Import is mandatory, not an optional nicety.
 
 Second consideration: an ``import`` block must reference a ``resource`` block, and
 the provider validates that block's *required* arguments. For several resource
@@ -18,19 +18,28 @@ fails ``plan``, those attributes are rendered as explicit ``# TODO`` markers and
 the file is labelled as requiring completion. Output that admits it is incomplete
 is more useful than output that looks finished and is not.
 
-Third consideration, and the reason output is split: **the AWS provider is scoped
-to one account and one region.** A ``provider "aws"`` block carries a single region
-and a single credential set, so a file whose import blocks span regions or accounts
-cannot resolve them all. The dangerous case is not a failure but a success against
-the wrong resource: an import for ``GameScores`` in account B, evaluated by a
-provider authenticated to account A, will adopt and reconfigure *A's* table of the
-same name. Each emitted file therefore covers exactly one account and region --
-see :mod:`remgen.layout`.
+Third consideration, and the reason output is split: **a Terraform provider
+configuration covers one credential scope.** For ``hashicorp/aws`` it also covers
+exactly one region, so a file whose import blocks span regions cannot resolve them
+all. The dangerous case is not a failure but a success against the wrong resource:
+an import for ``GameScores`` in account B, evaluated by a provider authenticated to
+account A, will adopt and reconfigure *A's* table of the same name. Whether region
+is part of that scope is a property of the specific provider, so it is declared per
+cloud rather than assumed here -- see
+:attr:`~remgen.core.provider.Provider.hcl_provider_is_region_scoped` and
+:mod:`remgen.core.layout`.
+
+This module is cloud-neutral. HCL syntax, ``import``-block semantics, label
+uniqueness rules, and ``tofu fmt`` alignment are properties of the configuration
+language, not of any cloud, so they are implemented once. The two things that are
+not neutral are supplied by the provider: the wording of the scope statement (which
+names the credential scope and the actual ``provider`` block) and the documentation
+label in recipe notes.
 
 No active ``provider`` block is emitted, because this file is meant to be placed in
 a workspace that already declares one, and a second declaration is a "Duplicate
-provider configuration" error. The required account and region are stated in the
-header, and a ready-to-uncomment block is included for standalone use.
+provider configuration" error. The required scope is stated in the header, and a
+ready-to-uncomment block is included for standalone use.
 
 Compatibility: the generated HCL is standard configuration language and works
 with OpenTofu and with Terraform. OpenTofu (MPL-2.0) is the primary target and is
@@ -40,57 +49,35 @@ by, or a dependency of this project. See NOTICE.md.
 
 from __future__ import annotations
 
-from remgen.generators.awscli import recipe_notes
-from remgen.generators.common import comment_block, render_template
-from remgen.layout import OutputUnit
-from remgen.model import Finding, Recipe, SafetyTier, to_hcl_label
+from collections.abc import Callable
+
+from remgen import PROJECT_NAME
+from remgen.core.generators.common import comment_block, recipe_notes, render_template
+from remgen.core.layout import OutputUnit
+from remgen.core.model import Finding, Recipe, SafetyTier, to_hcl_label
 
 #: Kept deliberately short. The full instructions live in README.md alongside the
 #: artifacts, written once per run: a run over a large estate emits one file per
-#: account and region, and repeating a 1 KB how-to preamble in each of them was
-#: adding a third of the total output for text nobody reads twice. What stays here
-#: is the provenance and the two warnings that must not be missed even by someone
-#: who opens a single file out of context.
+#: scope, and repeating a 1 KB how-to preamble in each of them was adding a third
+#: of the total output for text nobody reads twice. What stays here is the
+#: provenance and the two warnings that must not be missed even by someone who
+#: opens a single file out of context.
 _HEADER = """\
-# Generated by remgen (curated-aws-remediation-generator) v{version}
+# Generated by {command} ({project}) v{version}
 # Generated: {generated_at}
 # Compatible with OpenTofu and Terraform. Validated against OpenTofu.
 #
 # Read README.md in this directory before applying. In short: each `import` block
-# adopts an existing AWS resource and its paired `resource` block corrects the
+# adopts an existing cloud resource and its paired `resource` block corrects the
 # setting. Plan must report "N to import, 0 to add" -- any "to add" means an import
 # id is wrong. Do not import a resource another workspace already manages.
 #
-# Requires OpenTofu >= 1.6 or Terraform >= 1.5, and the AWS provider version noted
+# Requires OpenTofu >= 1.6 or Terraform >= 1.5, and the provider version noted
 # per policy below.
 """
 
 _NO_RESULTS = """
 # No remediable findings were supplied, so no configuration was generated.
-"""
-
-#: Scope statement plus a commented provider block. The block is commented rather
-#: than active because the header instructs the user to place this file in an
-#: existing workspace, which already declares a provider -- a second declaration is
-#: a "Duplicate provider configuration" error. Commented, it serves the standalone
-#: case without breaking the documented one.
-_SCOPE = """
-# ---------------------------------------------------------------------------
-# SCOPE: {scope}
-#
-# This file covers ONE account and ONE region, because that is all an AWS provider
-# configuration covers. A provider pointed at another account will not fail -- it
-# will import a same-named resource from the account it can see. Confirm this
-# workspace's provider targets account {account_id} in {region}.
-#
-# Standalone use: uncomment this block. `allowed_account_ids` makes a credential
-# mismatch fail the plan instead of importing the wrong resource.
-#
-# provider "aws" {{
-#   region              = "{region}"
-#   allowed_account_ids = ["{account_id}"]
-# }}
-# ---------------------------------------------------------------------------
 """
 
 
@@ -210,17 +197,17 @@ def _attr_lines(recipe: Recipe, finding: Finding, indent: str = "  ") -> list[st
     return lines
 
 
-def hcl_recipe_notes(recipe: Recipe) -> list[str]:
+def hcl_recipe_notes(recipe: Recipe, *, docs_label: str = "Provider docs") -> list[str]:
     """Return the comment lines describing a recipe, independent of any finding.
 
-    The CLI generator's notes plus the HCL-specific provider requirement and, when
-    the resource block needs human completion, the reason. Emitted once per policy;
-    see :func:`~remgen.generators.awscli.recipe_notes` for why.
+    The shared recipe notes plus the HCL-specific provider requirement and, when the
+    resource block needs human completion, the reason. Emitted once per policy; see
+    :func:`~remgen.core.generators.common.recipe_notes` for why.
     """
-    notes = recipe_notes(recipe)
+    notes = recipe_notes(recipe, docs_label=docs_label)
     if recipe.hcl is None:
         return notes
-    notes.append(f"Requires AWS provider >= {recipe.hcl.min_provider_version}")
+    notes.append(f"Requires provider >= {recipe.hcl.min_provider_version}")
     if not recipe.hcl.is_complete:
         # Stays inline and stays explicit: a placeholder that looks like a value is
         # the one failure here that silently reconfigures a resource.
@@ -243,6 +230,7 @@ def render_one(
     label: str | None = None,
     *,
     standalone: bool = True,
+    docs_label: str = "Provider docs",
 ) -> str:
     """Render the import + resource block pair for a single finding.
 
@@ -258,6 +246,8 @@ def render_one(
         standalone: When True, prefix the full recipe description so the block is
             self-contained. :func:`render_hcl` passes False because it emits that
             description once per policy.
+        docs_label: How to label the documentation link, e.g. ``"AWS docs"``.
+            Only used when ``standalone`` is True.
 
     Raises:
         ValueError: If the recipe has no HCL target.
@@ -280,7 +270,10 @@ def render_one(
     # policy by render_hcl, or by hcl_recipe_notes when rendering standalone.
     notes: list[str] = [finding.resource_id]
     if standalone:
-        notes = hcl_recipe_notes(recipe) + ["", f"Resource: {finding.resource_id}"]
+        notes = hcl_recipe_notes(recipe, docs_label=docs_label) + [
+            "",
+            f"Resource: {finding.resource_id}",
+        ]
     if not target.is_complete:
         notes.append(
             f"TODO: replace the {', '.join(target.unresolvable_names)} placeholder(s) "
@@ -307,6 +300,9 @@ def render_hcl(
     version: str,
     generated_at: str,
     unit: OutputUnit | None = None,
+    command: str = "remgen",
+    docs_label: str = "Provider docs",
+    scope_block: Callable[[OutputUnit], str] | None = None,
 ) -> str:
     """Render a complete ``.tf`` file for the given findings.
 
@@ -318,20 +314,32 @@ def render_hcl(
         version: Tool version, recorded in the header.
         generated_at: ISO-8601 timestamp, supplied so this stays deterministic.
         unit: The output unit this file covers, when the caller has split output by
-            scope. Supplying it records the account and region the provider must be
-            configured for. ``None`` renders without a scope statement, which is
-            only correct when every finding shares one account and region.
+            scope. Supplying it lets ``scope_block`` record the scope the provider
+            must be configured for. ``None`` renders without a scope statement,
+            which is only correct when every finding shares one scope.
+        command: The command that produced this file, for the provenance header.
+        docs_label: How to label documentation links, e.g. ``"AWS docs"``.
+        scope_block: Renders the cloud's scope statement and commented ``provider``
+            block for ``unit``. Supplied by the provider because the block names a
+            real provider type and its credential-guard argument
+            (``allowed_account_ids`` for AWS, ``subscription_id`` for Azure), which
+            a generic renderer cannot know. Returning ``""`` emits no statement.
+            When omitted, no scope statement is rendered -- a file that silently
+            drops it is the case that gets applied against the wrong scope, so
+            providers must pass one; the default exists only for unit tests that
+            render a single block.
     """
-    parts: list[str] = [_HEADER.format(version=version, generated_at=generated_at)]
-
-    if unit is not None and unit.region is not None:
-        parts.append(
-            _SCOPE.format(
-                scope=unit.scope_description,
-                account_id=unit.account_id,
-                region=unit.region,
-            )
+    parts: list[str] = [
+        _HEADER.format(
+            command=command,
+            project=PROJECT_NAME,
+            version=version,
+            generated_at=generated_at,
         )
+    ]
+
+    if unit is not None and scope_block is not None:
+        parts.append(scope_block(unit))
 
     # Labels are assigned across the whole file, not per block: uniqueness is a
     # property of the set, so it cannot be decided one block at a time.
@@ -368,7 +376,7 @@ def render_hcl(
 
         by_index = {i: f for i, _r, f in in_tier}
         for recipe, group_indices in groups.values():
-            notes = hcl_recipe_notes(recipe)
+            notes = hcl_recipe_notes(recipe, docs_label=docs_label)
             notes.append(f"Resources below: {len(group_indices)}")
             parts.append("\n" + comment_block(notes) + "\n")
             for index in group_indices:
