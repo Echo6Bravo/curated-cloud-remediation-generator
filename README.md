@@ -267,8 +267,8 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 - [ROADMAP.md](./ROADMAP.md) — what is deferred and why, including the open question of whether
   to ship non-reversible remediations.
 - [NOTICE.md](./NOTICE.md) — third-party licensing analysis (OpenTofu MPL-2.0, Terraform BUSL-1.1,
-  botocore Apache-2.0) and a standing recommendation for Tenable counsel review before public
-  release.
+  the AWS provider's docs MPL-2.0, botocore Apache-2.0). Generating HCL is in bounds under BUSL:
+  this tool is free, embeds nothing, and never invokes either binary.
 - [CHANGELOG.md](./CHANGELOG.md) — release history.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — the bar a new recipe must clear.
 - [SECURITY.md](./SECURITY.md) — how to report a security issue.
