@@ -137,6 +137,13 @@ Referenced by `src/remgen/core/generators/__init__.py`.
   project with a real cost.
 - **Possible:** pin an expected service-model hash per recipe so a *silent* upstream change is
   reported rather than only outright renames.
+- **The AWS service-model canary exists** (`.github/workflows/drift-canary.yml`, weekly). Two further
+  upstream surfaces are still unwatched, and both are blocked on validating generated HCL against the
+  provider *schema* rather than only its parser: the `hashicorp/aws` provider schema (an attribute
+  renamed or made required breaks emitted HCL while `tofu validate` on the current provider still
+  passes) and AWS CLI flag spellings (the service model constrains the API parameter, not the
+  `--flag` the script actually types). Until then, drift in either is caught only by a human reading
+  a failure.
 
 ## Operational
 
