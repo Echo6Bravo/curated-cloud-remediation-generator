@@ -23,7 +23,7 @@ Policy IDs are the Tenable Cloud Security policy UUIDs from the live catalog.
 
 from __future__ import annotations
 
-from remgen.model import ApiCall, CostImpact, Effort, HclTarget, Recipe
+from remgen.core.model import ApiCall, CostImpact, Effort, HclTarget, Recipe
 
 # ---------------------------------------------------------------------------
 # 1. DynamoDB table deletion protection

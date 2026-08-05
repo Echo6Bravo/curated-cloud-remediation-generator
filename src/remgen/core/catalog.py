@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from remgen.model import Policy
+from remgen.core.model import Policy
 
 #: Schema version for the snapshot file. Bumped if the on-disk shape changes, so
 #: an old snapshot is discarded rather than misread.

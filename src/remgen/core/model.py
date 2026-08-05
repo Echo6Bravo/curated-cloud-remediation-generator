@@ -7,7 +7,7 @@ once and rendered into every output format.
 Design rules that keep the generators honest:
 
 * A recipe declares the AWS API operation and parameters it relies on, so
-  :mod:`remgen.drift` can independently verify those still exist in the AWS
+  :mod:`remgen.providers.aws.drift` can independently verify those still exist in the AWS
   service model. A recipe that cannot be verified is a bug, not a warning.
 * A recipe declares its HCL resource type *and* the identifier shape needed to
   ``import`` an existing resource. Terraform/OpenTofu only manage what is in
@@ -171,7 +171,7 @@ class SafetyTier(str, Enum):
 class ApiCall:
     """The AWS API operation a remediation performs.
 
-    This is the contract :mod:`remgen.drift` verifies against the shipped
+    This is the contract :mod:`remgen.providers.aws.drift` verifies against the shipped
     botocore service model, which is why the parameter names are recorded
     explicitly rather than being buried in a format string.
     """

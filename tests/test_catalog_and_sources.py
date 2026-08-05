@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from remgen.catalog import (
+from remgen.core.catalog import (
     SNAPSHOT_VERSION,
     BaselineState,
     CacheError,
@@ -17,8 +17,8 @@ from remgen.catalog import (
     save_snapshot,
     snapshot_path,
 )
-from remgen.model import Policy
-from remgen.sources import (
+from remgen.core.model import Policy
+from remgen.core.sources import (
     JsonFileSource,
     SourceError,
     parse_findings,

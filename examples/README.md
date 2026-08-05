@@ -1,6 +1,6 @@
 # Sample input and output
 
-A real run, committed so you can read what `remgen` produces before installing it.
+A real run, committed so you can read what `awsremgen` produces before installing it.
 
 | File | What it is |
 | --- | --- |
@@ -11,24 +11,24 @@ A real run, committed so you can read what `remgen` produces before installing i
 Reproduce it exactly:
 
 ```bash
-remgen generate --findings examples/findings.sample.json --out ./artifacts --tier caution -v
+awsremgen generate --findings examples/findings.sample.json --out ./artifacts --safety-level caution -v
 ```
 
 Output is deterministic apart from the `Generated:` timestamp, so your artifacts should match
 `sample-output/` byte for byte otherwise. CI regenerates this on every push and fails if it drifts,
 which is what keeps this directory from becoming a stale picture of an older version.
 
-`--tier caution` is used here rather than the default because it exercises more of the tool. The
-default is `safest`, and on this same input it emits **1** remediation instead of 6, withholds 5,
-and prints the flag needed to include them — see [Safety tiers](#what-the-safety-tier-actually-gates)
-below.
+`--safety-level caution` is used here rather than the default because it exercises more of the tool.
+The default is `safest`, and on this same input it emits **1** remediation instead of 6, withholds 5,
+and prints the flag needed to include them — see
+[What the safety level actually gates](#what-the-safety-level-actually-gates) below.
 
 ## What the input is designed to show
 
 Six records are ordinary findings across two accounts and two regions. The other four are there
 because how a tool handles bad input is more informative than how it handles good input:
 
-| Record | Why it is in the fixture | What remgen does |
+| Record | Why it is in the fixture | What awsremgen does |
 | --- | --- | --- |
 | A second `checkout-sessions` record | Exports repeat findings — the same violation seen in two scans, or a record joined across views | Collapses it, reports `duplicates merged: 1`. Two HCL blocks for one resource would not validate. |
 | Policy `c1f0a4d2…` | A policy with no curated recipe | Reported as `no recipe: 1` and listed by id. Coverage is partial on purpose; guessing a remediation is the failure this design refuses. |
@@ -51,13 +51,14 @@ Seven files from six remediations:
 
 ```
 sample-output/
-├── README.md                                  ← per-run instructions and policy reference
-├── manifest.json                              ← machine-readable index of every file
-├── remediate-111111111111-all-regions.sh      ← 4 remediations
-├── remediate-222222222222-all-regions.sh      ← 2 remediations
-├── remediate-111111111111-us-east-1.tf        ← 3
-├── remediate-111111111111-us-west-2.tf        ← 1
-└── remediate-222222222222-us-east-1.tf        ← 2
+├── README.md                                          ← per-run instructions and policy reference
+├── manifest.json                                      ← machine-readable index of every file
+└── aws/
+    ├── remediate-aws-111111111111-all-regions.sh      ← 4 remediations
+    ├── remediate-aws-222222222222-all-regions.sh      ← 2 remediations
+    ├── remediate-aws-111111111111-us-east-1.tf        ← 3
+    ├── remediate-aws-111111111111-us-west-2.tf        ← 1
+    └── remediate-aws-222222222222-us-east-1.tf        ← 2
 ```
 
 **Why five artifacts and not one.** Two accounts produce two shell scripts, and the HCL splits
@@ -69,7 +70,14 @@ success**. Nothing throws. Region is a hard boundary for HCL (the provider is re
 soft one for the CLI (`--region` travels on each command), which is why the `.sh` files say
 `all-regions` and the `.tf` files do not.
 
-The account is in every filename because whoever runs these has to select credentials per file.
+**Why an `aws/` directory for a single cloud.** The layout does not change shape when a second cloud
+is added, so nothing a reader learns here becomes wrong later. `aws` also appears *in* each filename,
+not only in the path, so a file copied out of the tree still says which cloud and which account it
+belongs to — which is the question whoever runs it has to answer to pick credentials.
+
+`README.md` and `manifest.json` stay at the top rather than one per cloud, because reconciling a run
+is a property of the run: the counts have to show that a finding without an artifact was withheld or
+unsupported rather than lost, and a per-cloud index could not answer that.
 
 ### The scope guard, and proof it works
 
@@ -153,11 +161,11 @@ These notes are derived from the recipe's structured fields (`reversible`, `cost
 `blocks_iac_destroy`), not hand-written per recipe, so every artifact carries the same warning in
 the same words and no author can forget one.
 
-### What the safety tier actually gates
+### What the safety level actually gates
 
-The same input at each tier:
+The same input at each level:
 
-| Tier | Written | Withheld | What is withheld |
+| `--safety-level` | Written | Withheld | What is withheld |
 | --- | --- | --- | --- |
 | `safest` (default) | 1 | 5 | Everything irreversible, cost-scaled, or that blocks `tofu destroy` |
 | `caution` (this sample) | 6 | 0 | — |
