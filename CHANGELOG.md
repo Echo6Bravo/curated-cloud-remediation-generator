@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-08-07
+
+Second release, and the first with two clouds. Still pre-1.0: the CLI surface and recipe schema may
+still change, which is why three breaking renames land in a MINOR bump rather than forcing 1.0.
+
 ### Changed
 - **BREAKING: the command is now `awsremgen`, not `remgen`.** The package restructured into a
   cloud-neutral core (`remgen.core`) plus one provider per cloud (`remgen.providers.aws`), so a
@@ -103,6 +110,32 @@ All notable changes to this project are documented here. The format follows
     module. The filename-versus-contents check is the one that keeps the diff-bounding property true —
     without it, "adding to whichever file is already open" quietly restores the single-module blast
     radius.
+- **The version had two sources of truth and nothing checked they agreed.** It was written in both
+  `pyproject.toml` and `remgen/__init__.py`. `pyproject.toml` now declares `dynamic = ["version"]`
+  and reads the package attribute, so there is one. The failure this removes is quiet and asymmetric:
+  the copy stamped into every generated artifact header is the package's, so a drifted pair would
+  make `pip show remgen` disagree with the artifacts that install produced — and the artifact, the
+  thing a reader would trust, is the one that goes unchecked. Verified by building: the wheel
+  metadata reads `0.2.0` from the module rather than from a literal.
+- **New CI gate: `Version, tags and CHANGELOG agree`.** This repo was one step from the drift a
+  release gate exists to catch — a single tag (`v0.1.0`), 16 commits past it, and 45 CHANGELOG
+  bullets under `Unreleased` describing a tool whose command had been *renamed* — with nothing
+  checking any of it. Four checks, three of them bidirectional because the drift starts from either
+  side (notes written but never released, or a release cut without notes): a pushed tag needs a
+  CHANGELOG section; a `Release X.Y.Z` commit needs its tag; a CHANGELOG section needs its tag; and
+  `remgen.__version__` must equal the newest released section. The fourth is the one specific to
+  this project rather than to changelogs in general — the version is stamped into every generated
+  artifact, so a bump landing in the CHANGELOG but not the module makes each artifact misreport the
+  code that produced it. Checks 2–4 run on every trigger, so drift surfaces on the PR that
+  introduces it rather than at release time. `ci.yml` now also triggers on `v*` tag pushes, since a
+  tag is the one artifact here that cannot be corrected in place.
+  Eleven cases measured against a scratch repo rather than assumed, and each of the four drift shapes
+  fails: `__version__` lagging the CHANGELOG, an untagged section, a tag with no section, a
+  `Release` commit with no tag. The legitimate release-PR state passes through the carve-out; a
+  section already on the base branch does **not**; an unreadable base fails loudly instead of
+  exempting everything. Both dash forms parse, and a changed heading format is an explicit error
+  rather than a silent zero-section pass — a gate that stops matching reads as green, which is the
+  failure it was written to prevent.
 
 ### Security
 - **A hostile `account_id` or `region` in a findings export could write artifacts outside `--out`.**

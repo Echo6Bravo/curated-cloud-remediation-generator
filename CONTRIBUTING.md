@@ -343,6 +343,53 @@ actually accepts — using **read-only verbs only**. A verifier must never invok
 even one it expects to fail argument parsing; `test_azure_cli_surface.py` asserts that property by
 recording every argv the module spawns.
 
+## Cutting a release
+
+The version has **one** source of truth: `__version__` in `src/remgen/__init__.py`. `pyproject.toml`
+declares `dynamic = ["version"]` and reads that attribute, so do not add a `version =` line back —
+the two copies drifting is what motivated this, and the copy stamped into every artifact header is
+the module's, so a mismatch would make `pip show remgen` disagree with the artifacts that install
+produced. Keep it a plain string literal: setuptools parses the assignment rather than importing the
+module, so anything computed will not resolve at build time.
+
+The **Version, tags and CHANGELOG agree** job enforces the four ways this can drift, so these steps
+are not optional bookkeeping — skip one and the build fails.
+
+1. Bump `__version__`. **Regenerate both committed samples in the same commit** — the version is in
+   every artifact header, so the `sample` job stays red until you do:
+
+   ```bash
+   rm -rf ./artifacts && awsremgen generate --findings examples/findings.sample.json \
+     --out ./artifacts --safety-level caution -v > examples/sample-run.txt 2>&1
+   rsync -a --delete ./artifacts/ examples/sample-output/
+   rm -rf ./artifacts && azremgen generate --findings examples/findings.azure.sample.json \
+     --out ./artifacts -v > examples/sample-run.azure.txt 2>&1
+   rsync -a --delete ./artifacts/ examples/sample-output-azure/
+   rm -rf ./artifacts
+   ```
+
+   `--out ./artifacts` is load-bearing, not tidiness: the transcript echoes the path it was given,
+   so a different one diffs against the committed transcript and fails for a reason that is not
+   drift. Check the diff touches **only** version strings and timestamps — anything else means the
+   bump changed behaviour and belongs in its own commit with its own reasoning.
+2. Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD` and open a fresh `## [Unreleased]` above
+   it. **The dash is an em dash (—)**, matching the existing headings.
+3. Merge that PR to `main`, *before* tagging: the job fails on a tag whose CHANGELOG section is not
+   yet on `main`. One narrow carve-out keeps this from requiring a red merge — on a **pull request**,
+   a version section the PR itself adds may be untagged, since the tag has to point at a merge commit
+   that does not exist yet. It is scoped by diffing the base branch's `CHANGELOG.md`, so a section
+   already on `main` and still untagged is real drift and stays an error.
+4. Tag the merge commit and push **immediately** — `git tag -a vX.Y.Z -m "..." && git push origin
+   vX.Y.Z`. Between step 3 and this push `main` is legitimately red, because the carve-out is
+   PR-only by design; keep that window to a minute.
+5. `gh release create vX.Y.Z --title "..." --notes "..."`
+
+Pick the bump by what changed, not by how much work it was. Pre-1.0, a renamed command or flag is
+**MINOR** rather than MAJOR — 0.2.0 carried three breaking renames — because 0.x already tells a
+consumer the surface is unstable, and `0.1.0`'s own release note says so. Post-1.0 that stops being
+true and the same change is MAJOR. A version consumed by a release commit is spent: do not reuse it
+even if the release was never tagged.
+
 ## Commits
 
 Explain **why**, not just what. A commit that says "add S3 recipe" is less useful in six months
