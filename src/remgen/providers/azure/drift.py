@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from functools import lru_cache
@@ -65,17 +66,20 @@ from remgen.core.model import Recipe
 #: the level the AWS override also names -- a directory of services, not one service.
 MODELS_ENV_VAR = "REMGEN_AZURE_SDK_DIR"
 
-#: Where the ``azure/mgmt`` tree sits relative to an ``az`` installation root. Two
-#: patterns because the AWS one alone does not find it: Homebrew's ``az`` is a *bash
-#: wrapper*, so ``realpath`` stops at ``bin/az`` and the packages are a further level
-#: down under ``libexec``. The plain ``lib/`` form is what a pip or MSI install looks
-#: like. Ordered most-specific first; both are globs because the Python minor version
-#: is part of the path and moves with every CLI upgrade.
+#: Where the ``azure/mgmt`` tree sits relative to an ``az`` installation root. Globs
+#: because the Python minor version is part of the path and moves with every CLI
+#: upgrade. Ordered most-specific first. The ``libexec`` form is Homebrew's, the plain
+#: ``lib/`` form is a pip or Debian install, and ``lib/azure-cli/lib`` is the MSI's.
 _SDK_GLOBS = (
     "libexec/lib/python3*/site-packages/azure/mgmt",
     "lib/python3*/site-packages/azure/mgmt",
     "lib/azure-cli/lib/python3*/site-packages/azure/mgmt",
 )
+
+#: Matches a shell token that names a Python interpreter, e.g. ``bin/python3.14``.
+#: Anchored on a path separator or the start of the token so a token that merely
+#: *contains* the substring (``.../python_env/bin/az``) is not mistaken for one.
+_PYTHON_TOKEN_RE = re.compile(r"(?:^|/)python[0-9.]*$")
 
 
 @dataclass(frozen=True)
@@ -124,12 +128,83 @@ def find_sdk_dir() -> Path | None:
     az_bin = shutil.which("az")
     if not az_bin:
         return None
-    resolved = Path(os.path.realpath(az_bin))
-    for parent in list(resolved.parents)[:6]:
+    for root in _search_roots(Path(os.path.realpath(az_bin))):
         for pattern in _SDK_GLOBS:
-            matches = sorted(parent.glob(pattern))
+            matches = sorted(root.glob(pattern))
             if matches:
                 return matches[-1]
+    return None
+
+
+def _search_roots(launcher: Path) -> list[Path]:
+    """Directories to glob for the SDK tree, given a resolved ``az`` launcher.
+
+    The launcher's own parents, then -- if it is a shell wrapper -- the parents of the
+    interpreter it names. That second source is not a refinement of the first; it
+    reaches installations the first structurally cannot.
+
+    **Why globbing upward from the launcher is not enough, measured on the layout
+    GitHub's runners ship.** The Debian package installs ``/usr/bin/az`` as a *bash
+    wrapper rather than a symlink*, so ``realpath`` stops there and the parents are
+    ``/usr/bin``, ``/usr``, ``/``. The packages are at
+    ``/opt/az/lib/python3*/site-packages/azure/mgmt``, which is not below any of them.
+    No additional entry in :data:`_SDK_GLOBS` can reach it, because the tree is not
+    under the launcher at all. Homebrew's wrapper is the same shape and *happened* to
+    be reachable only because its interpreter sits inside the same Cellar prefix.
+
+    Reading the wrapper is what both layouts have in common: each names its
+    interpreter, and the SDKs are installed against that interpreter by construction.
+    The file is *read*, never executed -- the "no network calls, no binaries invoked"
+    property this whole module rests on is unchanged.
+
+    Returns the launcher's roots first, so an installation the old resolution found is
+    still found in the same place and by the same route.
+    """
+    roots = list(launcher.parents)[:6]
+    try:
+        first_kb = launcher.read_text(encoding="utf-8", errors="ignore")[:1024]
+    except OSError:
+        return roots
+    # A native binary is not a wrapper; bail before regexing megabytes of ELF.
+    if not first_kb.startswith("#!"):
+        return roots
+    interpreter = _interpreter_token(first_kb)
+    if not interpreter:
+        return roots
+    # Debian's wrapper writes the path relative to the launcher, via a variable it set
+    # earlier ("$bin_dir"/../../opt/az/bin/python3). Any unexpanded variable is
+    # resolved against the launcher's own directory -- which is what `$bin_dir` is
+    # assigned to -- rather than by running the shell to find out.
+    if "$" in interpreter:
+        interpreter = re.sub(r"\$\{?\w+\}?", ".", interpreter)
+    candidate = Path(interpreter)
+    if not candidate.is_absolute():
+        candidate = launcher.parent / candidate
+    resolved = Path(os.path.normpath(candidate))
+    roots.extend(p for p in list(resolved.parents)[:6] if p not in roots)
+    return roots
+
+
+def _interpreter_token(script: str) -> str | None:
+    """Return the interpreter path a wrapper script invokes, or ``None``.
+
+    Scans tokens rather than matching a line pattern, because the quoting is not
+    predictable: Homebrew writes a bare absolute path, and Debian writes
+    ``"$bin_dir"/../../opt/az/bin/python3`` -- where the quotes sit *inside* the path,
+    so a regex expecting a fully quoted token misses it. Quotes are stripped from
+    anywhere in the token for that reason.
+
+    The shebang line is skipped. It names the shell that runs the wrapper (or, for
+    ``/opt/az/bin/az``, a *build-machine* path that does not exist on the installed
+    system), never the interpreter the CLI actually runs under.
+    """
+    for line in script.splitlines():
+        if line.startswith("#!") or not line.strip():
+            continue
+        for token in line.split():
+            bare = token.replace('"', "").replace("'", "")
+            if bare and _PYTHON_TOKEN_RE.search(bare):
+                return bare
     return None
 
 

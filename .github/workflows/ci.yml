@@ -85,8 +85,15 @@ jobs:
             || { echo "::error::no AWS CLI autocomplete index found; recipe-vs-CLI-flag tests would silently skip"; exit 1; }
           command -v az >/dev/null || { echo "::error::az missing; Azure's CLI-surface tests would silently skip"; exit 1; }
           az version --output tsv || true
+          # This is the gate that caught a real resolution bug rather than a missing tool,
+          # so its message points at the resolver rather than telling you to install a CLI
+          # that is already there. The runner's preinstalled `az` is `/usr/bin/az`, a bash
+          # *wrapper* rather than a symlink, with its SDKs under `/opt/az` -- below none of
+          # the launcher's parents, so globbing upward found nothing while Homebrew, pip
+          # and the MSI all worked. Every Azure test skipped here while the canary, which
+          # pip-installs into site-packages, stayed green. See `_search_roots`.
           python -c "import sys; sys.path.insert(0,'src'); from remgen.providers.azure.drift import find_sdk_dir; d=find_sdk_dir(); print('azure.mgmt SDKs:', d); sys.exit(0 if d else 1)" \
-            || { echo "::error::no bundled azure.mgmt SDK packages found; recipe-vs-Azure-API tests would silently skip"; exit 1; }
+            || { echo "::error::no bundled azure.mgmt SDK packages found next to $(command -v az); recipe-vs-Azure-API tests would silently skip. az IS installed, so this is most likely find_sdk_dir failing to resolve this install layout, not a missing dependency -- see _SDK_GLOBS and _search_roots in remgen/providers/azure/drift.py"; exit 1; }
       - name: Test suite
         # No -k narrowing, no -x. The tests you did not expect to be affected are the point.
         # -rs surfaces skip reasons; --strict-markers keeps a typo'd marker from silently

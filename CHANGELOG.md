@@ -151,6 +151,37 @@ All notable changes to this project are documented here. The format follows
   no comment. It is replaced by the assertion, which cannot be true of only one component.
 
 ### Fixed
+- **The Azure SDK lookup found nothing on the layout GitHub's runners preinstall, so every Azure
+  test silently skipped in CI.** `find_sdk_dir()` globbed upward from the resolved `az` launcher.
+  The Debian package installs `/usr/bin/az` as a *bash wrapper rather than a symlink*, so
+  `realpath` stops there and the parents are `/usr/bin`, `/usr`, `/` — while the packages sit in
+  `/opt/az/lib/python3*/site-packages/azure/mgmt`, below none of them. Not a missing pattern: no
+  glob rooted at the launcher can reach a tree that is not under the launcher.
+  - **Three configurations agreed and the fourth disagreed, which is why this survived review.**
+    Homebrew, pip and the MSI all resolve, and Homebrew's `az` is the same wrapper shape — it
+    worked only because its interpreter happens to sit inside the same Cellar prefix. The
+    `azure-drift` canary `pip install`s into `site-packages`, so it verified all four recipes green
+    against real models on the same runner where every Azure test in `ci.yml` skipped.
+  - **Fixed by reading the wrapper for the interpreter it names** and globbing from that as well.
+    Both shipped wrapper shapes name one (Homebrew an absolute path, Debian
+    `"$bin_dir"/../../opt/az/bin/python3`), and SDKs are installed against an interpreter by
+    construction. The file is *read*, never executed, so the "no network calls, no binaries
+    invoked" property this axis rests on is unchanged. Launcher parents are still searched first
+    and first, so every layout that already resolved resolves identically.
+  - **Verified against the real artifact, not a guess at it:** `azure-cli_2.88.0-1~noble_amd64.deb`
+    — the runner's exact version — was unpacked and its 62 service packages and verbatim wrapper
+    used as the fixture. `verify` reads all four recipes green off that tree, and the *exact*
+    command CI runs now exits 0 where it exited 1. Both samples regenerate byte-identically, since
+    only resolution changed.
+  - **Three regression tests, mutation-checked.** Reverting the fix fails two of them. They cover
+    the runner layout, a launcher naming no interpreter (which must still fall back to the globs,
+    so supporting a new layout costs no existing one), and a shebang not being mistaken for the
+    interpreter — `/opt/az/bin/az` starts `#!/mnt/repo/python_env/bin/python3`, a *build-machine*
+    path absent from every installed system. The pre-existing layout test also called
+    `lib/azure-cli/lib/…` "the MSI/deb layout"; the deb half of that was wrong and is corrected.
+  - The first version of one test asserted `not any(parent.glob(p) for …)`. A generator is always
+    truthy, so that assertion was vacuous; it only surfaced because the expected answer was "no
+    matches". Rewritten over a list comprehension, with the trap recorded inline.
 - **A cross-subscription escape: an Azure finding could remediate a resource in a subscription the
   script's own scope guard never named.** The most serious defect found in this project so far, and
   it was live in shipped code. An ARM resource id begins `/subscriptions/<id>/`, so an Azure finding
