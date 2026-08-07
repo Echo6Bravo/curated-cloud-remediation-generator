@@ -118,15 +118,23 @@ jobs:
         # typo'd module path there installs a command that raises ImportError on first run
         # with a fully green suite behind it. This runs each command as a command.
         #
-        # Read from pyproject rather than listed here: a hardcoded list would have to be
-        # edited by the same commit that adds a cloud, which is the edit that gets
-        # forgotten -- and forgetting it exempts the new command from the only check of it.
+        # Discovered rather than listed here: a hardcoded list would have to be edited by
+        # the same commit that adds a cloud, which is the edit that gets forgotten -- and
+        # forgetting it exempts the new command from the only check of it.
+        #
+        # Read from the INSTALLED distribution's metadata, not by parsing pyproject.toml.
+        # Two reasons, and the first is the substantive one: the entry points that exist
+        # after `pip install` are what this step is about, and a declaration that never
+        # became one is exactly the failure being hunted -- parsing the source would
+        # report a command that is not there as present. The second is that `tomllib` is
+        # stdlib only from 3.11, so on the 3.10 leg of this matrix the parse raised
+        # ModuleNotFoundError and failed the job for a reason unrelated to the code.
         run: |
           set -euo pipefail
           python3 - <<'PY' > /tmp/scripts.txt
-          import pathlib, tomllib
-          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
-          names = sorted(data["project"]["scripts"])
+          from importlib.metadata import distribution
+          eps = distribution("remgen").entry_points
+          names = sorted(e.name for e in eps if e.group == "console_scripts")
           assert len(names) >= 2, f"expected a command per cloud, found {names}"
           print("\n".join(names))
           PY
