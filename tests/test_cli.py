@@ -14,6 +14,7 @@ import subprocess
 
 import pytest
 
+from remgen.core.model import SafetyTier
 from remgen.providers.aws.cli import main
 from remgen.providers.aws.recipes import all_recipes
 
@@ -153,6 +154,49 @@ def test_generate_defaults_to_safest_level_and_says_what_it_withheld(env, capsys
     assert "--safety-level caution" in captured
 
 
+def test_artifact_sections_run_least_to_most_risky(env, capsys):
+    """A reader meets the safe changes first and the risky ones last.
+
+    Every artifact is ordered by ``SafetyTier.rank`` -- the same ordering the HCL
+    generator uses to file a merged block under the riskiest of its contributors.
+    Reversed or flattened, each artifact still contains every section and every
+    remediation, so no count and no substring assertion in this suite changes, while a
+    user skimming the top of the file now leads with the changes they should be most
+    reluctant to run.
+    """
+    findings = _write(env / "f.json", list(GOOD.values()))
+    assert (
+        _run(
+            [
+                "generate",
+                "--findings",
+                str(findings),
+                "--out",
+                str(env / "art"),
+                "--safety-level",
+                "all",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()  # drain, so a later test's assertions see only its own output
+
+    for suffix in (".sh", ".tf"):
+        body = _joined(env / "art", suffix)
+        # The banner text starts with the tier name in upper case; see
+        # generators.common.tier_banner.
+        positions = [(body.find(t.value.upper()), t) for t in SafetyTier]
+        present = [(i, t) for i, t in positions if i >= 0]
+        assert len(present) >= 2, (
+            f"fewer than two tiers appear in the {suffix} artifacts, so the ordering "
+            f"below is vacuous. Found {[t.value for _, t in present]}."
+        )
+        assert present == sorted(present, key=lambda p: p[1].rank), (
+            f"{suffix} sections are not ordered least-to-most risky: "
+            f"{[t.value for _, t in present]}"
+        )
+
+
 def test_safety_level_all_includes_more_remediations(env, capsys):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(["generate", "--findings", str(findings), "--out", str(env / "safe")])
@@ -175,6 +219,133 @@ def test_safety_level_all_includes_more_remediations(env, capsys):
     assert all_script.count("aws ") > safe_script.count("aws ")
     assert "Withheld by safety level" not in all_out
     assert "Withheld by safety level" in safe_out
+
+
+def test_a_recipe_conflict_exits_6_and_writes_nothing_at_all(env, capsys, monkeypatch):
+    """Exit 6 must leave no artifacts, not a half-written set.
+
+    The shell script is rendered *before* the HCL, so a naive handler would leave a
+    directory holding a `.sh` and no `.tf` -- which reads as "this cloud has no IaC
+    equivalent", a state the tool produces legitimately for recipes without an HCL
+    target. A user would apply the script believing the run succeeded.
+
+    Forced with a monkeypatched conflicting recipe pair rather than a real one,
+    because no two shipped recipes overlap -- and if one ever does, the set-level test
+    in ``test_recipe_set.py`` fails instead, which is the right place for it.
+    """
+    import remgen.core.cli as core_cli
+    from remgen.core.model import ApiCall, HclTarget, Recipe
+
+    real = get_recipe_for("284b1210-a31e-48ce-97af-f4d825ef132d")
+    assert real is not None and real.hcl is not None
+
+    def _conflicting(suffix, value):
+        return Recipe(
+            policy_id=f"{real.policy_id[:-1]}{suffix}",
+            policy_title=f"Conflicting {suffix}",
+            summary="s",
+            api=ApiCall(service="s3", operation="PutBucketVersioning", parameters=("Bucket",)),
+            cli_template="aws s3api put-bucket-versioning --bucket {resource_id}",
+            hcl=HclTarget(
+                resource_type=real.hcl.resource_type,
+                attributes=(("bucket", value),),
+                import_id_template=real.hcl.import_id_template,
+            ),
+            reverse_hint="undo",
+        )
+
+    a = _conflicting("a", '"{resource_id}"')
+    b = _conflicting("b", '"a-different-bucket"')
+    conflicting = {a.policy_id: a, b.policy_id: b}
+    monkeypatch.setattr(core_cli, "_pair_findings", _pairs_for(core_cli, conflicting), raising=True)
+
+    findings = _write(
+        env / "f.json",
+        [
+            {
+                "policyId": pid,
+                "resourceId": "shared-bucket",
+                "region": "us-east-1",
+                "accountId": "123456789012",
+            }
+            for pid in conflicting
+        ],
+    )
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out)]) == 6
+
+    err = capsys.readouterr().err
+    assert "disagree" in err, f"the error did not say what went wrong: {err!r}"
+    assert "awsremgen" in err, "the error did not say this is a defect in the tool"
+    assert not _scripts(out), "a shell script was written despite the run failing"
+    assert not _tfs(out), "HCL was written despite the run failing"
+
+
+def test_a_filename_that_escapes_the_output_directory_exits_6_and_writes_nothing(
+    env, capsys, monkeypatch
+):
+    """The containment check before each write must not be dead code.
+
+    ``Finding`` now rejects a hostile ``account_id`` or ``region`` outright, so no
+    input can reach this branch -- which is exactly why it needs its own test. A
+    defence-in-depth check that nothing exercises is indistinguishable from a
+    deleted one, and the comment beside it would go on claiming a guarantee that had
+    quietly stopped holding.
+
+    The escape is injected by overriding ``OutputUnit.filename`` rather than through
+    a finding, because the hazard this branch exists for is the one the validators
+    cannot see: a *future* filename component that nobody re-validated. That is the
+    scenario simulated here, and it is the only way to reach the line at all.
+
+    Two ``..`` segments, not one: artifacts are written under a per-cloud directory,
+    so a single ``..`` lands beside it and is still inside ``--out``. The check
+    permits that, correctly -- the boundary being defended is the output directory,
+    not the cloud subdirectory -- and a one-segment payload would make this test
+    pass for the wrong reason if the check were later removed.
+    """
+    from remgen.core.layout import OutputUnit
+
+    real_filename = OutputUnit.filename.fget
+    monkeypatch.setattr(
+        OutputUnit,
+        "filename",
+        property(lambda self: f"../../escaped-{real_filename(self)}"),
+        raising=True,
+    )
+
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out)]) == 6
+
+    err = capsys.readouterr().err
+    assert "outside the output directory" in err, f"the error did not say why: {err!r}"
+    assert "awsremgen" in err, "the error did not say this is a defect in the tool"
+    # The escaped name resolves into `env`, the parent of `out`. Nothing may be
+    # there: returning 6 after writing the file would report a failure and still
+    # have done the thing.
+    escaped = sorted(p.name for p in env.iterdir() if p.name.startswith("escaped-"))
+    assert not escaped, f"wrote outside the output directory anyway: {escaped}"
+    assert not _scripts(out) and not _tfs(out), "a partial artifact set was left behind"
+
+
+def _pairs_for(core_cli, recipes):
+    """Return a ``_pair_findings`` that resolves ids from ``recipes``.
+
+    Wraps the real function so only recipe *lookup* is substituted; the sort, the
+    unmatched split and everything downstream stay under test.
+    """
+    real_pair = core_cli._pair_findings
+
+    def pair(findings, provider):
+        import dataclasses
+
+        return real_pair(findings, dataclasses.replace(provider, get_recipe=recipes.get))
+
+    return pair
+
+
+def get_recipe_for(policy_id):
+    return next((r for r in all_recipes() if r.policy_id == policy_id), None)
 
 
 def test_generate_reports_unsupported_policies(env, capsys):
@@ -674,6 +845,104 @@ def test_same_resource_name_in_two_accounts_still_validates(env, tofu_workspace_
 
 
 @pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
+def test_a_merged_block_validates_against_the_real_provider(env, tofu_workspace_template):
+    """The merged output shape, checked by the real parser rather than by substring.
+
+    Merging is the whole point of two recipes on one resource, and no shipped pair
+    overlaps yet -- so without this, the new output shape has never been through a
+    real parser and the substring tests in ``test_generators.py`` are the only oracle.
+    They cannot catch a merged block that reads correctly and does not parse: a
+    duplicated argument, a nested block emitted twice, an attribute the provider
+    rejects on this resource type.
+
+    Built from two *real* provider features on one real resource type
+    (``aws_dynamodb_table``: ``deletion_protection_enabled`` from the shipped recipe,
+    plus a ``point_in_time_recovery`` block), because a made-up ``aws_thing`` would
+    validate nothing -- the provider has to recognise both.
+    """
+    import remgen.core.cli as core_cli
+    from remgen.core.model import ApiCall, HclTarget, Recipe
+
+    shipped = get_recipe_for("468d7976-445f-44c2-b9fb-45fb1005f373")
+    assert shipped is not None and shipped.hcl is not None
+
+    pitr = Recipe(
+        policy_id="00000000-0000-0000-0000-0000000000pi",
+        policy_title="DynamoDB point-in-time recovery is not enabled",
+        summary="Enable PITR",
+        api=ApiCall(
+            service="dynamodb",
+            operation="UpdateContinuousBackups",
+            parameters=("TableName", "PointInTimeRecoverySpecification"),
+        ),
+        cli_template=(
+            "aws dynamodb update-continuous-backups --table-name {resource_id} "
+            "--point-in-time-recovery-specification PointInTimeRecoveryEnabled=true"
+        ),
+        hcl=HclTarget(
+            resource_type="aws_dynamodb_table",
+            # `name` is set identically by the shipped recipe -- the merge must emit it
+            # once. HCL rejects a duplicated argument, so this half the parser catches.
+            attributes=(("name", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            blocks=(("point_in_time_recovery", (("enabled", "true", ""),)),),
+            unresolvable_required_attributes=(
+                ("hash_key", '"TODO"', "TODO: set to the table's existing hash key"),
+            ),
+        ),
+        reverse_hint="disable point-in-time recovery",
+    )
+    recipes = {shipped.policy_id: shipped, pitr.policy_id: pitr}
+    monkeypatch_pairs = _pairs_for(core_cli, recipes)
+
+    findings = _write(
+        env / "f.json",
+        [
+            {
+                "policyId": pid,
+                "resourceId": "GameScores",
+                "region": "us-east-1",
+                "accountId": "123456789012",
+            }
+            for pid in recipes
+        ],
+    )
+    original = core_cli._pair_findings
+    core_cli._pair_findings = monkeypatch_pairs
+    try:
+        assert (
+            _run(
+                [
+                    "generate",
+                    "--findings",
+                    str(findings),
+                    "--out",
+                    str(env / "art"),
+                    "--safety-level",
+                    "all",
+                ]
+            )
+            == 0
+        )
+    finally:
+        core_cli._pair_findings = original
+
+    text = _joined(env / "art", ".tf")
+    # One pair for the one table, carrying both policies' changes.
+    assert text.count("import {") == 1, text
+    assert text.count('resource "aws_dynamodb_table"') == 1, text
+    assert text.count("point_in_time_recovery {") == 1, text
+    assert "deletion_protection_enabled = true" in text
+    assert text.count("name ") == 1 or text.count("\n  name") == 1, (
+        f"`name` was emitted more than once; HCL rejects a duplicate argument:\n{text}"
+    )
+
+    # The oracle: real fmt -check and validate. A merged block that a substring test
+    # accepts and the provider rejects fails here.
+    _tofu_check_all(env / "art", env / "work", tofu_workspace_template)
+
+
+@pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
 def test_every_recipe_pairs_one_import_with_one_resource(env):
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
@@ -760,6 +1029,182 @@ def test_verify_reports_model_source(env, capsys):
     assert code in (0, 4)
     if code == 4:
         assert "could not be checked" in captured
+
+
+def test_verify_reports_all_three_axes(env, capsys):
+    """``verify`` must visibly cover every axis, including ones that did not run.
+
+    The three checks -- API model, provider schema, CLI flags -- rot independently, so
+    a run that silently omitted one would leave a reader believing a clean result
+    covered all of them. Each section must name itself in the output even when its
+    inputs are absent; that is the whole reason the HCL section prints a "not checked"
+    block rather than nothing.
+    """
+    code = _run(["verify"])
+    captured = capsys.readouterr().out
+    assert "Model source:" in captured
+    assert "HCL: checking" in captured
+    assert "CLI: checking" in captured
+    assert code in (0, 4)
+
+
+def test_a_provider_with_no_cli_verifier_says_the_axis_did_not_run(capsys):
+    """The cloud-neutral branch for a provider whose CLI axis is not written yet.
+
+    Both shipped providers now have one -- AWS reads ``ac.index``, Azure asks
+    ``az --help`` -- so this branch has no live caller, and until this test it had no
+    coverage either: it was reachable only through Azure, and stopped being so the
+    moment that axis was implemented. Left in place rather than deleted because the next
+    cloud will pass through it before its verifier exists, and that is exactly when a
+    silent ``return 0`` would report two axes as if they were three.
+
+    Driven through a copy of the real descriptor with the one field cleared, so what is
+    exercised is the shared branch rather than a mock of it.
+    """
+    import dataclasses
+
+    from remgen.core.cli import _verify_cli_axis
+    from remgen.providers.aws import AWS
+
+    assert _verify_cli_axis(dataclasses.replace(AWS, verify_cli_surface=None)) == 0
+    out = capsys.readouterr().out
+    assert "did not run" in out, "an axis with no verifier reported nothing at all"
+    assert "one of three" in out, (
+        "the message must say what a clean run of the others does not cover"
+    )
+    assert "ok  " not in out, "an axis that did not run must not print a pass line"
+
+
+def test_verify_without_a_schema_says_so_and_does_not_claim_a_pass(env, capsys, monkeypatch):
+    """No schema is the ordinary case, and it must read as unchecked, not as checked.
+
+    Exit-code-neutral by design -- requiring a 19 MB artifact for ``verify`` to
+    succeed would make the common path fail -- so the *output* is the only thing
+    stopping a misreading, which is what this pins.
+    """
+    monkeypatch.delenv("REMGEN_TF_SCHEMA", raising=False)
+    _run(["verify"])
+    captured = capsys.readouterr().out
+    hcl_section = captured.split("HCL: checking", 1)[1]
+    assert "not checked" in hcl_section
+    assert "tofu providers schema -json" in hcl_section, (
+        "the message must say how to enable the check, or it is a dead end"
+    )
+    assert "All 5 HCL target(s) match" not in captured, "an unchecked axis must never print a pass"
+
+
+def test_verify_with_a_bad_schema_path_fails_rather_than_skipping(env, capsys, tmp_path):
+    """A schema that was asked for and cannot be used is an error.
+
+    This is the failure mode that makes a canary go blind while reporting green: point
+    it at a path that stops existing, and a checker that treated "unusable" as
+    "unavailable" would report success forever.
+    """
+    code = _run(["verify", "--provider-schema", str(tmp_path / "absent.json")])
+    assert code == 4
+    assert "schema unusable" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
+def test_verify_passes_all_axes_against_the_real_toolchain(env, capsys, real_provider_schema_path):
+    """The whole command, green, against real inputs on all three axes.
+
+    Distinct from the unit tests for each axis: it asserts the three combine into a
+    zero exit code, which is what CI and the drift canary actually branch on. A
+    per-axis test passing while the command returns non-zero -- an axis returning a
+    code the combiner mishandles -- would otherwise go unnoticed.
+    """
+    if real_provider_schema_path is None:
+        pytest.fail("tofu is present but no schema was produced; the HCL axis never ran")
+
+    code = _run(["verify", "--provider-schema", str(real_provider_schema_path)])
+    captured = capsys.readouterr().out
+    assert code == 0, captured
+    assert "All 5 HCL target(s) match the current provider schema." in captured
+    assert "render commands the CLI accepts" in captured
+
+
+@pytest.mark.skipif(TOFU is None, reason="neither tofu nor terraform available")
+def test_verify_exits_7_when_a_recipe_contradicts_the_schema(
+    env, capsys, real_provider_schema_path, tmp_path, monkeypatch
+):
+    """Exit 7 must be reachable, and must be distinct from the API axis's codes.
+
+    The canary branches on the code to say *which* upstream moved. If HCL drift
+    produced 0 -- or produced 3 -- the canary would report the wrong cause, or nothing
+    at all. Provoked by mutating the schema rather than the recipe, because that is the
+    real direction of the drift: the recipe set is correct and the provider changed.
+    """
+    if real_provider_schema_path is None:
+        pytest.fail("tofu is present but no schema was produced")
+
+    document = json.loads(real_provider_schema_path.read_text(encoding="utf-8"))
+    key = next(iter(document["provider_schemas"]))
+    resources = document["provider_schemas"][key]["resource_schemas"]
+    del resources["aws_kms_key"]  # a resource type a shipped recipe targets
+    mutated = tmp_path / "mutated-schema.json"
+    mutated.write_text(json.dumps(document), encoding="utf-8")
+
+    code = _run(["verify", "--provider-schema", str(mutated)])
+    captured = capsys.readouterr().out
+    assert code == 7, f"expected the HCL-drift code, got {code}:\n{captured}"
+    assert "aws_kms_key" in captured
+    assert "resource_type_missing" in captured
+
+
+def test_verify_runs_every_axis_even_after_one_fails(env, capsys, monkeypatch):
+    """A failing axis must not stop the others from running or reporting.
+
+    This is the property the drift canary depends on. With an early return, a canary
+    watching three upstreams could only ever see the first broken one -- so a provider
+    rename would stay hidden behind an unrelated API change for as long as that took
+    to fix, which is the exact blindness the canary exists to prevent.
+
+    The API axis is forced to fail by pointing model discovery at an empty directory:
+    a real condition, and specifically a *concrete drift verdict* (exit 3, every
+    service model missing) rather than "could not check". That is the case that would
+    have early-returned, so it is the one worth provoking -- and it is provoked by real
+    inputs rather than a patched return value.
+    """
+    from remgen.providers.aws import drift
+
+    # Both are lru_cached, so without this the run is served an earlier test's models
+    # and the axis passes -- the test would then assert nothing about the failure path.
+    drift.find_model_dir.cache_clear()
+    drift._load_service_model.cache_clear()
+    monkeypatch.setenv("REMGEN_BOTOCORE_DATA_DIR", str(env))
+    try:
+        code = _run(["verify"])
+    finally:
+        drift.find_model_dir.cache_clear()
+        drift._load_service_model.cache_clear()
+    captured = capsys.readouterr().out
+    assert code == 3, captured
+    assert "no longer match the AWS API" in captured
+    # The two later sections must still have run and reported.
+    assert "HCL: checking" in captured
+    assert "CLI: checking" in captured
+    assert "render commands the CLI accepts" in captured, (
+        "the CLI axis did not report; a failing earlier axis suppressed it"
+    )
+
+
+def test_verify_reports_the_most_urgent_code_not_the_first(env, capsys, monkeypatch):
+    """When axes disagree, "could not check" must outrank any concrete failure.
+
+    A blind axis is worse than a red one: it reports nothing, so every other verdict
+    in the run is incomplete. Returning the first non-zero code instead would let an
+    unrunnable check hide behind a lesser, actionable one.
+    """
+    from remgen.core import cli as core_cli
+
+    monkeypatch.setattr(core_cli, "_verify_hcl_axis", lambda a, p: 7)
+    monkeypatch.setattr(core_cli, "_verify_cli_axis", lambda p: 4)
+    assert _run(["verify"]) == 4
+
+    monkeypatch.setattr(core_cli, "_verify_cli_axis", lambda p: 8)
+    assert _run(["verify"]) == 7, "HCL drift must outrank CLI drift"
+    capsys.readouterr()  # drain; the assertions above are on codes, not output
 
 
 def test_recipes_lists_levels_and_safety_notes(env, capsys):

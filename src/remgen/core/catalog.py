@@ -105,11 +105,24 @@ class CatalogDiff:
         """True when no baseline existed at all (an expected first run)."""
         return self.baseline is BaselineState.ABSENT
 
-    def summary_lines(self) -> list[str]:
-        """Human-readable summary, suitable for terminal output."""
+    def summary_lines(self, *, cloud_label: str = "") -> list[str]:
+        """Human-readable summary, suitable for terminal output.
+
+        Args:
+            cloud_label: How to name the cloud whose policies these are, e.g.
+                ``"AWS"`` or ``"Azure"``. Passed in rather than hardcoded: this
+                module is in ``core`` and is reached by every cloud, and a run
+                that reported "N AWS policies" while remediating Azure would be
+                describing correct behavior in the wrong cloud's vocabulary --
+                the same failure ``scope_noun`` exists to prevent elsewhere.
+                Defaults to no label rather than to ``"AWS"``, because a wrong
+                cloud name reads as authoritative while a missing one reads as
+                missing.
+        """
+        noun = f"{cloud_label} policies" if cloud_label else "policies"
         if self.baseline is BaselineState.UNREADABLE:
             return [
-                f"Policy catalog: {self.total} AWS policies.",
+                f"Policy catalog: {self.total} {noun}.",
                 "  WARNING: the cached baseline exists but could not be read (corrupt, truncated,",
                 "  or written by a different version). No comparison was possible, so new or",
                 "  changed policies were NOT detected on this run. The baseline is being rebuilt",
@@ -118,13 +131,13 @@ class CatalogDiff:
             ]
         if self.baseline is BaselineState.ABSENT:
             return [
-                f"Policy catalog: {self.total} AWS policies (first run -- baseline "
+                f"Policy catalog: {self.total} {noun} (first run -- baseline "
                 f"saved, so no changes are reported this time).",
             ]
         if not self.changed:
-            return [f"Policy catalog: {self.total} AWS policies, unchanged since last run."]
+            return [f"Policy catalog: {self.total} {noun}, unchanged since last run."]
 
-        lines = [f"Policy catalog: {self.total} AWS policies."]
+        lines = [f"Policy catalog: {self.total} {noun}."]
         if self.added:
             lines.append(f"  {len(self.added)} new policy/policies since last run:")
             lines.extend(f"    + {p.title}  [{p.policy_id}]" for p in self.added)

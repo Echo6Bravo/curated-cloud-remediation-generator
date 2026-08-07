@@ -18,11 +18,25 @@ are worth reading twice:
 
 from __future__ import annotations
 
+from remgen.core.model import Recipe
 from remgen.core.provider import Provider
+from remgen.providers.aws.cli_surface import index_source_description, verify_all_cli
 from remgen.providers.aws.drift import model_source_description, verify_all
 from remgen.providers.aws.hcl import scope_block
 from remgen.providers.aws.recipes import all_recipes, get
 from remgen.providers.aws.shell import render_cli_script
+
+
+def _verify_cli_surface(recipes: tuple[Recipe, ...]) -> tuple[tuple[bool, bool, str, str], ...]:
+    """Adapt :func:`verify_all_cli` to the cloud-neutral tuple the pipeline reads.
+
+    The adaptation lives here rather than in ``cli_surface`` so that module stays a
+    straightforward AWS checker with its own richer result type, usable directly in
+    tests and in the drift canary, while the shared CLI sees only the four facts it
+    prints.
+    """
+    return tuple((r.ok, r.checked, r.command, r.detail) for r in verify_all_cli(recipes))
+
 
 AWS = Provider(
     cloud="aws",
@@ -46,6 +60,12 @@ AWS = Provider(
         "Install AWS CLI v2, or set REMGEN_BOTOCORE_DATA_DIR to a botocore data dir."
     ),
     cli_requirement="AWS CLI v2 (v1 is not tested)",
+    # Matched as a suffix of the schema document's provider key, which is
+    # registry.opentofu.org/hashicorp/aws under OpenTofu and
+    # registry.terraform.io/hashicorp/aws under Terraform.
+    tf_provider_source="hashicorp/aws",
+    verify_cli_surface=_verify_cli_surface,
+    describe_cli_surface_source=index_source_description,
 )
 
 __all__ = ["AWS"]
