@@ -570,11 +570,15 @@ jobs:
           # 1. Files named from source comments/docstrings and from doc links.
           for f in ("README.md", "ROADMAP.md", "NOTICE.md", "CHANGELOG.md",
                     "CONTRIBUTING.md", "SECURITY.md", "LICENSE",
-                    # ROADMAP.md's Coverage section links this as the answer to "why
+                    # ROADMAP.md's Coverage section links these as the answer to "why
                     # does this policy have no recipe", and the claims job cross-checks
-                    # it against the shipped recipes. Without it here, a deletion shows
-                    # up as a traceback in that gate rather than as a dangling link.
-                    "AWS_POLICY_TRIAGE.md",
+                    # each against its cloud's shipped recipes. Without them here, a
+                    # deletion shows up as a missing-register error in that gate rather
+                    # than as the dangling link it also is. Both are named explicitly:
+                    # the claims job derives the list from the discovered providers, and
+                    # this one is about links a reader can follow, so it is honest for
+                    # them to be separate checks of the same file.
+                    "AWS_POLICY_TRIAGE.md", "AZURE_POLICY_TRIAGE.md",
                     # The sample is documentation the README sends readers to, so a
                     # missing piece of it is a dangling reference like any other. Note
                     # that '.gitignore' contains 'artifacts/', which matches at any
@@ -810,100 +814,148 @@ jobs:
                 + ", ".join(f"{p.display_name} ({len(p.all_recipes())} recipes)" for p in implemented))
           PY
 
-      - name: AWS policy triage register agrees with the recipes
-        # AWS_POLICY_TRIAGE.md assigns all 237 AWS-only policies to exactly one of four
-        # buckets, and ROADMAP.md cites its rejection classes as the reason a policy has no
-        # recipe. Two of its claims rot on the ordinary course of work: the shipped table
-        # goes stale the moment a batch lands, and a rejection that gets overturned leaves
-        # the register arguing against code that exists. Both failures are silent -- the
-        # suite does not care what a document says about a recipe -- and the second is the
-        # worse one, because the rejection reasoning is what a reader is sent to.
+      - name: Every cloud's policy triage register agrees with its recipes
+        # <CLOUD>_POLICY_TRIAGE.md assigns every one of that cloud's policies to exactly one
+        # of four buckets, and ROADMAP.md cites the rejection classes as the reason a policy
+        # has no recipe. Two of those claims rot on the ordinary course of work: the shipped
+        # table goes stale the moment a batch lands, and a rejection that gets overturned
+        # leaves the register arguing against code that exists. Both failures are silent --
+        # the suite does not care what a document says about a recipe -- and the second is
+        # the worse one, because the rejection reasoning is what a reader is sent to.
+        #
+        # Per-cloud and provider-DISCOVERED, for the same reason the SECURITY.md scope check
+        # above is: this step began as a hardcoded `AWS_POLICY_TRIAGE.md`, so when Azure got
+        # a register the gate went on checking one cloud and reporting success. A hardcoded
+        # list has to be edited by the commit that adds a cloud, and that is exactly the
+        # edit that gets forgotten. Now a cloud with recipes and no register fails the build.
+        #
+        # A provider whose descriptor reaches no recipes is skipped: it is a directory entry
+        # rather than support, and demanding a triage register for a cloud with nothing
+        # shipped would block the commit that starts one.
         #
         # What this does NOT check is whether an assignment is *right*: that is a judgement
         # about an external API surface no job here can reach. It checks internal
         # consistency and agreement with the code, which is the checkable part.
         run: |
           python3 - <<'PY'
-          import pathlib, re, sys
+          import importlib, pathlib, pkgutil, re, sys
           sys.path.insert(0, "src")
-          from remgen.providers.aws import AWS
+          import remgen.providers
+          from remgen.core.provider import Provider
 
-          DOC = pathlib.Path("AWS_POLICY_TRIAGE.md")
-          text = DOC.read_text()
-          errs = []
-          # Section headings partition the document, so a renamed one must say that rather
-          # than silently drop every row under it out of the count -- that is the shape in
-          # which this check keeps passing while the register is wrong.
+          implemented = []
+          for _finder, name, ispkg in pkgutil.iter_modules(remgen.providers.__path__):
+              if not ispkg:
+                  continue
+              module = importlib.import_module(f"remgen.providers.{name}")
+              for value in vars(module).values():
+                  if isinstance(value, Provider) and value.all_recipes():
+                      implemented.append(value)
+          if not implemented:
+              print("::error::no implemented provider discovered; this check would pass"
+                    " vacuously")
+              sys.exit(1)
+
           SECTIONS = ("## Shipped", "## Write a recipe now",
                       "## Blocked on a named prerequisite", "## Documented rejection",
                       "## Keeping this file honest")
-          for heading in SECTIONS:
-              if text.count(f"\n{heading}\n") != 1:
-                  errs.append(f"expected exactly one '{heading}' heading; the buckets are"
-                              " split on these headings and cannot be counted without them")
-          if errs:
-              for e in errs: print(f"::error file={DOC}::{e}")
-              sys.exit(1)
-          bounds = [text.index(f"\n{h}\n") for h in SECTIONS]
-          bodies = {SECTIONS[i]: text[bounds[i]:bounds[i + 1]] for i in range(len(SECTIONS) - 1)}
-          UUID = re.compile(
-              r"^\| `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` \|",
-              re.MULTILINE)
-          buckets = {h: UUID.findall(b) for h, b in bodies.items()}
-
-          seen = {}
-          for heading, ids in buckets.items():
-              for pid in ids:
-                  if pid in seen:
-                      errs.append(f"policy {pid} appears in both '{seen[pid]}' and"
-                                  f" '{heading}'; a policy has exactly one disposition")
-                  seen[pid] = heading
-          if not seen:
-              errs.append("no policy rows found at all; this check would pass vacuously")
-
-          # The summary must match the rows, so editing a row without editing the summary
-          # cannot leave the summary asserting the old split.
           COUNTS = {"Shipped": "## Shipped",
                     "Write a recipe now": "## Write a recipe now",
                     "Blocked on a prerequisite": "## Blocked on a named prerequisite",
                     "Documented rejection": "## Documented rejection"}
-          flat = re.sub(r"[ \t]+", " ", text)
-          for label, heading in COUNTS.items():
-              m = re.search(rf"^\| {re.escape(label)} \| (\d+) \|", flat, re.MULTILINE)
-              if not m:
-                  errs.append(f"Result table has no '{label}' row; the summary and the"
-                              " register cannot be cross-checked without it")
+          UUID = re.compile(
+              r"^\| `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` \|",
+              re.MULTILINE)
+
+          failed = False
+          summaries = []
+          for provider in sorted(implemented, key=lambda p: p.cloud):
+              DOC = pathlib.Path(f"{provider.cloud.upper()}_POLICY_TRIAGE.md")
+              # The whole point of discovering providers: a cloud that ships recipes and has
+              # no register is the failure this step exists to catch, not a skip.
+              if not DOC.exists():
+                  print(f"::error::{provider.display_name} ships"
+                        f" {len(provider.all_recipes())} recipes but {DOC} does not exist;"
+                        " every implemented cloud needs a triage register, because"
+                        " ROADMAP.md sends readers to one for the reason a policy has no"
+                        " recipe")
+                  failed = True
                   continue
-              if int(m.group(1)) != len(buckets[heading]):
-                  errs.append(f"Result table says {label} = {m.group(1)}, but '{heading}'"
-                              f" lists {len(buckets[heading])} policies")
-          m = re.search(r"^\| \*\*Total\*\* \| \*\*(\d+)\*\* \|", flat, re.MULTILINE)
-          if not m:
-              errs.append("Result table has no bolded Total row")
-          elif int(m.group(1)) != len(seen):
-              errs.append(f"Result table total is {m.group(1)}, but {len(seen)} distinct"
-                          " policies are listed")
+              text = DOC.read_text()
+              errs = []
+              # Section headings partition the document, so a renamed one must say that
+              # rather than silently drop every row under it out of the count -- that is the
+              # shape in which this check keeps passing while the register is wrong.
+              for heading in SECTIONS:
+                  if text.count(f"\n{heading}\n") != 1:
+                      errs.append(f"expected exactly one '{heading}' heading; the buckets"
+                                  " are split on these headings and cannot be counted"
+                                  " without them")
+              if errs:
+                  for e in errs: print(f"::error file={DOC}::{e}")
+                  failed = True
+                  continue
+              bounds = [text.index(f"\n{h}\n") for h in SECTIONS]
+              bodies = {SECTIONS[i]: text[bounds[i]:bounds[i + 1]]
+                        for i in range(len(SECTIONS) - 1)}
+              buckets = {h: UUID.findall(b) for h, b in bodies.items()}
 
-          shipped_doc = set(buckets["## Shipped"])
-          shipped_code = {r.policy_id for r in AWS.all_recipes()}
-          for pid in sorted(shipped_code - shipped_doc):
-              errs.append(f"policy {pid} has an AWS recipe but is not in the Shipped table;"
-                          " move its row there from whichever bucket now claims it is"
-                          " outstanding")
-          for pid in sorted(shipped_doc - shipped_code):
-              errs.append(f"policy {pid} is listed as shipped but no AWS recipe reaches it")
-          for pid in sorted(set(buckets["## Documented rejection"]) & shipped_code):
-              errs.append(f"policy {pid} is in a rejection class but has a shipped recipe;"
-                          " the rejection was overturned, so move the row and edit that"
-                          " class's reasoning")
+              seen = {}
+              for heading, ids in buckets.items():
+                  for pid in ids:
+                      if pid in seen:
+                          errs.append(f"policy {pid} appears in both '{seen[pid]}' and"
+                                      f" '{heading}'; a policy has exactly one disposition")
+                      seen[pid] = heading
+              if not seen:
+                  errs.append("no policy rows found at all; this check would pass vacuously")
 
-          if errs:
-              print(f"::error file={DOC}::AWS policy triage register is inconsistent")
-              for e in errs: print("  -", e)
+              # The summary must match the rows, so editing a row without editing the
+              # summary cannot leave the summary asserting the old split.
+              flat = re.sub(r"[ \t]+", " ", text)
+              for label, heading in COUNTS.items():
+                  m = re.search(rf"^\| {re.escape(label)} \| (\d+) \|", flat, re.MULTILINE)
+                  if not m:
+                      errs.append(f"Result table has no '{label}' row; the summary and the"
+                                  " register cannot be cross-checked without it")
+                      continue
+                  if int(m.group(1)) != len(buckets[heading]):
+                      errs.append(f"Result table says {label} = {m.group(1)}, but"
+                                  f" '{heading}' lists {len(buckets[heading])} policies")
+              m = re.search(r"^\| \*\*Total\*\* \| \*\*(\d+)\*\* \|", flat, re.MULTILINE)
+              if not m:
+                  errs.append("Result table has no bolded Total row")
+              elif int(m.group(1)) != len(seen):
+                  errs.append(f"Result table total is {m.group(1)}, but {len(seen)} distinct"
+                              " policies are listed")
+
+              shipped_doc = set(buckets["## Shipped"])
+              shipped_code = {r.policy_id for r in provider.all_recipes()}
+              for pid in sorted(shipped_code - shipped_doc):
+                  errs.append(f"policy {pid} has a {provider.display_name} recipe but is not"
+                              " in the Shipped table; move its row there from whichever"
+                              " bucket now claims it is outstanding")
+              for pid in sorted(shipped_doc - shipped_code):
+                  errs.append(f"policy {pid} is listed as shipped but no"
+                              f" {provider.display_name} recipe reaches it")
+              for pid in sorted(set(buckets["## Documented rejection"]) & shipped_code):
+                  errs.append(f"policy {pid} is in a rejection class but has a shipped"
+                              " recipe; the rejection was overturned, so move the row and"
+                              " edit that class's reasoning")
+
+              if errs:
+                  print(f"::error file={DOC}::{provider.display_name} policy triage register"
+                        " is inconsistent")
+                  for e in errs: print("  -", e)
+                  failed = True
+                  continue
+              summaries.append(f"{DOC}: {len(seen)} policies, " + ", ".join(
+                  f"{h.removeprefix('## ')}={len(i)}" for h, i in buckets.items()))
+
+          if failed:
               sys.exit(1)
-          print(f"AWS policy triage register is consistent: {len(seen)} policies, "
-                + ", ".join(f"{h.removeprefix('## ')}={len(i)}"
-                            for h, i in buckets.items()))
+          print(f"{len(summaries)} triage register(s) consistent:")
+          for line in summaries: print("  " + line)
           PY
 
   release-consistency:
