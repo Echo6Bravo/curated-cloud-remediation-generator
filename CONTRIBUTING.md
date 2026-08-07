@@ -58,9 +58,27 @@ per-recipe test parametrizes over a set that excludes it, and nothing anywhere g
 `test_every_service_module_on_disk_is_actually_discovered` walks the directory and asserts the
 aggregate contains every module's entries, so that failure mode cannot come back.
 
+**Start by picking a policy from [AWS_POLICY_TRIAGE.md](./AWS_POLICY_TRIAGE.md).** It assigns every
+AWS-only policy in the catalogue to one of four buckets, and the *Write a recipe now* section is the
+prioritised, service-batched list of what is ready to be written — with the UUID you need in the same
+row. Two things follow from that, both enforced:
+
+- **Moving the row is part of your commit.** When your recipe lands, its row moves out of *Write a
+  recipe now* into *Shipped*, and the counts in the *Result* table change with it. A `claims` gate
+  compares that table against the recipes reachable from the provider descriptor, in both directions,
+  so leaving the row behind fails the build rather than leaving the register quietly claiming your
+  work is outstanding.
+- **If you want to write one the register rejects, argue the class, not the policy.** The eight
+  rejection classes are the unit: a policy is rejected because it is an instance of one. Overturning
+  one means editing that class's reasoning and moving every member it no longer covers — which is the
+  point, since `ROADMAP.md` cites those classes as the answer to "why does this policy have no
+  recipe". The same gate fails if a rejected policy gains a recipe without its row moving.
+
 Every field must be verified against a primary source, not inferred from a similar recipe:
 
-1. **Policy UUID** from the live Tenable Cloud Security catalog. Not invented, not guessed.
+1. **Policy UUID** from `AWS_POLICY_TRIAGE.md`, or from the live Tenable Cloud Security catalog for a
+   policy the register does not cover (it triages AWS-only policies; `Custom`, admission-controller
+   and uncategorised ones are outside it). Not invented, not guessed.
 2. **API call and parameters** confirmed against the AWS service model (`service-2.json`) —
    the same source `awsremgen verify` reads. Confirm the operation name and every parameter's shape.
 3. **HCL resource type and attribute** confirmed against the provider **schema**
@@ -104,8 +122,13 @@ else's.
 Then prove it end to end:
 
 - `awsremgen verify --provider-schema <schema.json>` passes for the new recipe on **all three** axes.
-  Without `--provider-schema` the HCL axis reports "not run" and exits `4` — which is not a pass, and
-  is the one result that looks like one if you only read the first section of the output.
+  **You must pass the flag.** Without it the HCL axis prints `? not checked` and `verify` still exits
+  `0` — deliberately, since requiring a 19 MB artifact would make the common path fail, and
+  `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass` pins that. So a green exit code is
+  *not* evidence your recipe's HCL was checked: the only evidence is the `Schema source:` line in the
+  HCL section. Read it. Exit `4` means a check was requested and could not run — an unusable schema
+  path, absent service models, a missing CLI surface — which is a different situation from never
+  having asked.
 - Generated HCL passes **real** `tofu init` / `validate` / `fmt -check` — in its own workspace, per
   file. A substring assertion is not proof; real parsers reject artifacts that substring checks
   accept.

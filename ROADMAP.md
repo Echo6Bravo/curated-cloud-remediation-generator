@@ -68,6 +68,12 @@ each one brings its own irreversible operations under the same flag.
 - **Explicitly excluded, and why:** VPC flow logs is a single API call but bills on ingested volume
   with no ceiling. It stays out of the default set regardless of how easy it is to script. Ease of
   scripting is not a safety argument.
+- **Which policies, specifically:** [AWS_POLICY_TRIAGE.md](AWS_POLICY_TRIAGE.md) assigns every
+  AWS-only policy in the catalogue to one of four buckets — shipped, write-a-recipe-now, blocked on a
+  named prerequisite, or documented rejection — with the eight rejection classes and a prioritised,
+  service-batched recipe list. The VPC flow logs exclusion above is one member of one of those
+  classes; the register generalises it. It also records what it does *not* cover: the `Custom`,
+  `KubernetesAdmissionController` and uncategorised policies, which no pass has triaged.
 - **Recipes are split one module per AWS service** (`recipes/dynamodb.py`, `recipes/rds.py`, ...),
   because the service is the unit the *verification* is done in: one API model, one CLI command group,
   one set of provider resource types. A single growing file made a new recipe's diff span everything,
@@ -206,7 +212,8 @@ Referenced by `src/remgen/core/generators/__init__.py`.
   `tofu`: producing a schema downloads the provider, and a tool whose entire safety argument is "it
   makes no network calls and invokes no binaries" should not fetch hundreds of megabytes from a
   registry. The cost is that the axis is the only one with a setup step, and the only one that reports
-  "not run" (exit `4`) on a default invocation. A `--generate-schema` flag would remove the step and
+  `not checked` on a default invocation — exit-code-neutral, so the printed section rather than the
+  exit status is what distinguishes "checked" from "skipped". A `--generate-schema` flag would remove the step and
   the property; the property is worth more.
 - **The CLI axis depends on an internal AWS CLI file.** `awscli/data/ac.index` is the CLI's own
   autocomplete index, not a documented interface, and AWS may restructure or drop it. It is read
