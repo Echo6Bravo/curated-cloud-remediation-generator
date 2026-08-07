@@ -3,14 +3,45 @@ name: Upstream drift canary
 # NOT a gate. Nothing here blocks a push or a pull request, and it is deliberately a
 # separate workflow so it can never become a required check.
 #
-# What it is for: `ci.yml` already verifies every recipe against the real AWS service
+# What it is for: `ci.yml` already verifies every recipe against the real cloud service
 # models on each push, so drift is caught immediately *while someone is working*. This
 # repo's failure mode is the opposite one -- a curated recipe set is exactly the kind of
-# thing that sits untouched for months. AWS keeps changing its API surface during that
-# time, and a tool that emits commands against production accounts must not rot in
-# silence between commits. So this runs the same verification on a schedule, with the
-# newest botocore, and turns a positive result into a durable artifact (an issue)
+# thing that sits untouched for months. Both clouds keep changing their API surfaces
+# during that time, and a tool that emits commands against production accounts must not
+# rot in silence between commits. So this runs the same verification on a schedule, with
+# the newest upstreams, and turns a positive result into a durable artifact (an issue)
 # instead of a workflow run nobody looks at.
+#
+# TWO JOBS, ONE PER CLOUD, and they are not copies of each other. The AWS job watches
+# three independently-versioned upstreams; the Azure job watches **two**. That is not an
+# unfinished third signal -- see `azure-drift` for why the count differs, and do not
+# "fix" it by adding one.
+#
+# The AWS job's THREE upstreams are watched because the artifacts this tool emits depend
+# on three things that change independently and are maintained by different people:
+#
+#   1. AWS service models (botocore)   -- does the API operation still exist?
+#   2. hashicorp/aws provider schema   -- does the .tf resource type still accept these
+#                                         arguments, and does it still require the ones
+#                                         a recipe stubs?
+#   3. The `aws` CLI flag surface      -- is the *command string* in the .sh artifact
+#                                         still one the binary parses?
+#
+# Signal 1 alone was the original canary and it is not sufficient: AWS can leave
+# `UpdateTable` untouched while the Terraform provider renames an argument, or while the
+# CLI renames a flag. Each of those breaks a shipped artifact while signal 1 stays green.
+#
+# All three run in ONE job against one `awsremgen verify` invocation, which reports all
+# three axes in a single run whatever any one of them says. That is deliberate -- see
+# `cmd_verify`. Splitting them into three jobs would triple the provider download for no
+# added signal, and separate jobs would each need their own issue-filing logic.
+#
+# The clouds ARE split into separate jobs, and that reasoning does not contradict the
+# paragraph above. Splitting *axes* would fragment one `verify` invocation that already
+# reports all of them; splitting *clouds* separates two invocations that were never one.
+# The concrete gain is that a broken `az` install cannot make the AWS canary report
+# nothing, and either cloud's issue names one cloud rather than "something upstream
+# moved". They run concurrently, so the wall-clock cost is one job, not two.
 #
 # LIMITATION, stated because it silently defeats the whole workflow: GitHub disables
 # `schedule` triggers after 60 days of repository inactivity and does not re-enable them
@@ -36,8 +67,8 @@ permissions:
   contents: read
 
 jobs:
-  aws-service-models:
-    name: AWS service models still match the recipes
+  upstream-drift:
+    name: All three upstreams still match the recipes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -54,26 +85,106 @@ jobs:
         # Unpinned on purpose. Everywhere else a floating dependency is a liability;
         # here it is the entire point -- the newest service models are the upstream this
         # canary is watching. Pinning would make it verify against a snapshot and report
-        # "no drift" forever.
+        # "no drift" forever. The same reasoning applies to the unpinned provider
+        # constraint and the runner's own AWS CLI below.
         run: pip install --upgrade botocore
 
-      - name: Record which models were actually checked
-        # A version number in the log is what makes a green run auditable later. Without
-        # it, a pass proves only that *some* model set matched.
-        run: |
-          python -c "import botocore; print('botocore', botocore.__version__)"
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          # `latest`, unlike ci.yml's pin. Deliberate, and the same reasoning as the
+          # unpinned botocore: CI pins so a toolchain change cannot break an unrelated
+          # PR, while this canary exists to notice upstream movement, and a pinned tool
+          # resolving a pinned provider would stop seeing new schemas.
+          tofu_version: latest
 
-      - name: Verify recipes against the AWS API definitions
+      - name: Generate the current provider schema
+        # Signal 2's input. `verify` deliberately does not run `tofu` itself -- a
+        # generator handed untrusted findings should not shell out to a tool that
+        # downloads 600 MB from a registry -- so producing the schema is an explicit
+        # step here, and the path is handed to `verify` below.
+        #
+        # No version constraint on the provider: `required_providers` without `version`
+        # resolves the newest release, which is the upstream being watched.
+        #
+        # And deliberately **no plugin cache**, unlike both `tofu`-running jobs in ci.yml.
+        # Restoring one here would still resolve the newest provider -- verified: a warm
+        # cache holding only an older 5.x does not stop `init` fetching 5.100.0 -- so this
+        # is not a correctness fix. It is about what the job is for. This runs weekly and
+        # its whole value is fetching an upstream nobody has seen yet, so the cache would
+        # almost always miss, and a reader reasonably asks whether a cached artifact is
+        # what the canary is comparing against. Paying one download a week to keep that
+        # question from arising is the right trade.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/schema-ws
+          cat > /tmp/schema-ws/main.tf <<'TF'
+          terraform {
+            required_providers {
+              aws = { source = "hashicorp/aws" }
+            }
+          }
+          TF
+          tofu -chdir=/tmp/schema-ws init -backend=false -no-color
+          tofu -chdir=/tmp/schema-ws providers schema -json > /tmp/schema.json
+          # A truncated or empty document would load as "unusable" and exit 4 below,
+          # which is correct but reports the canary as blind rather than naming the
+          # cause. Failing here instead puts the real reason in the log.
+          test -s /tmp/schema.json
+
+      - name: Record which upstreams were actually checked
+        # Version numbers in the log are what make a green run auditable later. Without
+        # them, a pass proves only that *some* set of upstreams matched -- and for a
+        # canary whose entire value is "the newest upstream still agrees", that is the
+        # difference between evidence and a green tick.
+        run: |
+          set -euo pipefail
+          python -c "import botocore; print('botocore', botocore.__version__)"
+          tofu -chdir=/tmp/schema-ws version
+          aws --version
+          python - <<'PY'
+          import json
+          with open("/tmp/schema.json") as handle:
+              doc = json.load(handle)
+          for key, versions in (doc.get("provider_versions") or {"(unpinned)": ""}).items():
+              print("provider", key, versions)
+          for key, entry in doc["provider_schemas"].items():
+              print("schema", key, len(entry.get("resource_schemas", {})), "resource types")
+          PY
+
+      - name: Confirm the CLI-flag signal can actually run
+        # Signal 3 reads `ac.index` from the runner's bundled AWS CLI v2. If the runner
+        # image ever stops shipping it, or moves it, that signal degrades to
+        # "unavailable" -- which `verify` reports as exit 4, so it would be caught. This
+        # step exists to name the cause in the log rather than leaving a maintainer to
+        # work out why the canary went blind.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys
+          from remgen.providers.aws.cli_surface import find_ac_index
+          path = find_ac_index()
+          if path is None:
+              print("::error::no AWS CLI autocomplete index found; the CLI-flag signal "
+                    "cannot run and `verify` will report exit 4")
+              sys.exit(1)
+          print("ac.index", path)
+          PY
+
+      - name: Verify recipes against all three upstreams
         id: verify
-        # Exit codes are load-bearing and are handled individually below rather than
-        # collapsed into pass/fail: `verify` returns 3 for "a recipe no longer matches"
-        # and 4 for "the check could not run at all". Those need different responses --
-        # the first is a code defect, the second means this canary went blind -- and
-        # treating either as success is the specific failure this workflow exists to
-        # avoid.
+        # One invocation covers all three axes and reports every one of them regardless
+        # of what the others said, so a single run cannot hide a second broken upstream
+        # behind the first.
+        #
+        # Exit codes are load-bearing and are handled individually rather than collapsed
+        # into pass/fail, because they call for different responses: 3/7/8 name *which*
+        # upstream moved (a code fix, in three different places), while 4 means a check
+        # could not run at all -- this canary went blind, which is worse than red because
+        # it reports nothing. Treating any of them as success is the specific failure
+        # this workflow exists to prevent.
         run: |
           set +e
-          awsremgen verify 2>&1 | tee /tmp/verify.txt
+          awsremgen verify --provider-schema /tmp/schema.json 2>&1 | tee /tmp/verify.txt
           # PIPESTATUS, not $?: $? is `tee`'s status, which is 0 whenever the write
           # succeeds. Reading it here would report every drift as a pass.
           code="${PIPESTATUS[0]}"
@@ -81,8 +192,10 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           case "$code" in
             0) echo "verdict=ok" >> "$GITHUB_OUTPUT" ;;
-            3) echo "verdict=drift" >> "$GITHUB_OUTPUT" ;;
+            3) echo "verdict=api-drift" >> "$GITHUB_OUTPUT" ;;
             4) echo "verdict=blind" >> "$GITHUB_OUTPUT" ;;
+            7) echo "verdict=hcl-drift" >> "$GITHUB_OUTPUT" ;;
+            8) echo "verdict=cli-drift" >> "$GITHUB_OUTPUT" ;;
             *) echo "verdict=broken" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -98,27 +211,56 @@ jobs:
         # persists, can be assigned, and shows up next to the code.
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016
+          # The single-quoted backticks below are Markdown for the issue body, not command
+          # substitution, so non-expansion is exactly what is wanted.
+          #
+          # A distinct title per signal, because each is a different fix in a different
+          # file and they can be open at once. Sharing one title would make the second
+          # one to appear a comment on the first and lose it.
           case "$VERDICT" in
-            drift)
+            api-drift)
               title="Drift: a curated recipe no longer matches the AWS API"
               lead="\`awsremgen verify\` reported that at least one recipe's operation or"
               lead="$lead parameters no longer exist in the current AWS service models."
               lead="$lead **Do not cut a release until this is resolved** -- the affected"
               lead="$lead recipe generates a command AWS will reject."
               ;;
+            hcl-drift)
+              title="Drift: a recipe's HCL target no longer matches the provider schema"
+              lead="\`awsremgen verify\` exited 7: at least one recipe disagrees with the"
+              lead="$lead current \`hashicorp/aws\` schema. Either an argument or resource"
+              lead="$lead type was renamed or removed -- in which case the generated"
+              lead="$lead \`.tf\` no longer loads -- or a recipe stubs a \`TODO\` for an"
+              lead="$lead argument the provider does not require, which on an imported"
+              lead="$lead resource proposes changing a live value nobody asked to change."
+              lead="$lead The AWS API half passed, so this is provider drift only and the"
+              lead="$lead \`.sh\` artifacts are unaffected."
+              ;;
+            cli-drift)
+              title="Drift: a recipe renders a command the AWS CLI no longer accepts"
+              lead="\`awsremgen verify\` exited 8: a recipe's rendered \`aws\` command names"
+              lead="$lead a subcommand or flag the current CLI does not accept, so the"
+              lead="$lead generated script fails when run. Note this can happen while the"
+              lead="$lead underlying API operation is untouched -- the CLI renamed the flag,"
+              lead="$lead not AWS the operation -- which is why this signal exists"
+              lead="$lead separately from the service-model check."
+              ;;
             blind)
-              title="Drift canary is blind: no AWS service models available"
-              lead="\`awsremgen verify\` exited 4, meaning it could not check anything."
-              lead="$lead This is not a pass. Until it is fixed, nothing is watching for"
-              lead="$lead AWS API drift. Most likely cause: the \`botocore\` install step"
-              lead="$lead succeeded but shipped no \`data/\` directory, or the package name"
-              lead="$lead moved."
+              title="Drift canary is blind: an upstream check could not run"
+              lead="\`awsremgen verify\` exited 4, meaning at least one of the three checks"
+              lead="$lead could not run at all. **This is not a pass**, and every other"
+              lead="$lead verdict in the run is incomplete. Read the output below to see"
+              lead="$lead which axis is unavailable: no botocore \`data/\` directory, an"
+              lead="$lead unusable or missing provider schema, or no AWS CLI \`ac.index\`."
+              lead="$lead Until it is fixed, that upstream is unwatched."
               ;;
             *)
               title="Drift canary failed to run"
-              lead="\`awsremgen verify\` exited $CODE, which is neither success (0), drift"
-              lead="$lead (3), nor unavailable models (4). The canary itself is broken and"
-              lead="$lead is reporting nothing about upstream drift."
+              lead="\`awsremgen verify\` exited $CODE, which is not one of its documented"
+              lead="$lead codes: 0 success, 3 API drift, 4 could-not-check, 7 provider-schema"
+              lead="$lead drift, 8 CLI-flag drift. The canary itself is broken and is"
+              lead="$lead reporting nothing about any upstream."
               ;;
           esac
 
@@ -131,13 +273,22 @@ jobs:
             echo "Detected by the scheduled canary, not by a push, so this may have been"
             echo "true for up to a week. Run: $RUN_URL"
             echo
-            echo '<details><summary>`awsremgen verify` output</summary>'
+            echo "All three signals ran and are reported below, so check whether more"
+            echo "than one upstream moved -- the exit code names only the most urgent."
             echo
-            echo '```'
+            # Quoted heredoc: the backticks are Markdown for the issue body, and an
+            # unquoted delimiter would have the shell try to execute them.
+            cat <<'MD'
+          <details><summary><code>awsremgen verify</code> output</summary>
+
+          ```
+          MD
             cat /tmp/verify.txt
-            echo '```'
-            echo
-            echo '</details>'
+            cat <<'MD'
+          ```
+
+          </details>
+          MD
           } > /tmp/issue-body.md
 
           # Match on the exact title so a recurring condition updates one issue instead
@@ -162,4 +313,339 @@ jobs:
         # list is what a maintainer glances at.
         run: |
           echo "::error::verify exited ${{ steps.verify.outputs.code }} (${{ steps.verify.outputs.verdict }}); see the filed issue"
+          exit 1
+
+  azure-drift:
+    name: Both Azure upstreams still match the recipes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    #
+    # TWO upstreams, not three, and the difference from `upstream-drift` is a fact about
+    # how Azure ships rather than a signal nobody got round to adding. **Do not add a
+    # third.** The AWS job watches botocore, the provider schema, and the `aws` CLI --
+    # three artifacts, three release trains, three maintainers. Azure's three *axes* map
+    # onto only two upstreams:
+    #
+    #   1. `azure-cli`      -- BOTH the API axis and the CLI axis. The API axis reads the
+    #                          62 `azure.mgmt.*` SDK packages bundled inside `az`, and
+    #                          `remgen.providers.azure.drift` deliberately refuses an
+    #                          importable `azure.mgmt` in favour of the bundled copy, so
+    #                          that it reads the version `az` itself uses. The CLI axis
+    #                          asks that same `az` binary for `--help`. One upgrade moves
+    #                          both signals together.
+    #   2. hashicorp/azurerm -- the `.tf` half, released independently by HashiCorp.
+    #
+    # This is not a coverage gap: all three axes still run and still report separately,
+    # and `azremgen verify` still distinguishes exit 3 from 8 so the issue names which
+    # half broke. What is genuinely weaker than AWS is *independence* -- the two Azure
+    # axes cannot disagree about which `az` they read, so this canary cannot catch the
+    # AWS-style case where a CLI renames a flag the API kept. On Azure that case does not
+    # arise from a version skew, because there is no skew to have.
+    #
+    # There is also no Azure equivalent of the AWS job's third upstream to pin down: the
+    # runner's `aws` CLI v2 is installed separately from botocore and can move on its own.
+    # Azure has one install.
+    #
+    # NOTHING HERE AUTHENTICATES, and that is measured rather than hoped for: all three
+    # Azure axes were run against an empty `AZURE_CONFIG_DIR` and reported 4 ok each with
+    # no login prompt. The API axis reads files on disk; the CLI axis calls `--help` and
+    # read-only verbs only. So this job needs no tenant, no secret and no OIDC federation
+    # -- which is why it can run on a schedule in a public repo at all. If a future step
+    # here needs credentials, that is a design change to argue for, not a detail to add.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+
+      - name: Install the newest published azure-cli
+        # Unpinned on purpose, exactly as the AWS job's botocore is: the newest `az` is
+        # the upstream being watched, and pinning would have this verify against a
+        # snapshot and report "no drift" forever.
+        #
+        # One `pip install`, TWO signals moved. This is the asymmetry the job header
+        # describes, in one line of shell: the SDK models the API axis reads and the
+        # `--help` output the CLI axis parses both come out of this package. The runner
+        # image already ships an `az`, and it is upgraded rather than used as-is for the
+        # same reason -- the shipped one is a snapshot of whenever the image was built.
+        #
+        # `--upgrade` rather than a bare install so an image-provided `az` is actually
+        # replaced. Verified locally that the axes read the *installed* SDK directory and
+        # not an importable `azure.mgmt`, so the upgrade is what this measures.
+        run: pip install --upgrade azure-cli
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          # `latest`, same reasoning as the AWS job: a pinned tool resolving a pinned
+          # provider would stop seeing new schemas.
+          tofu_version: latest
+
+      - name: Generate the current azurerm provider schema
+        # Signal 2's input, and a **separate document** from the AWS job's -- not an
+        # oversight and not shareable. `tofu providers schema -json` keys its output by
+        # provider source address, so a document describes the providers one workspace
+        # declared. Handing `azremgen` the AWS document is caught by that lookup and
+        # reported as `schema unusable` with exit 4 (could-not-check, not a pass), which
+        # is correct behaviour and a useless canary. Two workspaces, two documents.
+        #
+        # `subscription_id` is required from azurerm 4.0 onward, so it is set -- to the
+        # all-zeros placeholder, because `init -backend=false` plus `providers schema`
+        # never call ARM. `features {}` for the same reason ci.yml's provider file has it.
+        # No version constraint: the newest release is the upstream being watched.
+        #
+        # No plugin cache, for the reason the AWS step gives at length: this job's whole
+        # value is fetching a provider nobody has seen yet, so a cache would almost always
+        # miss while making a reader wonder whether the canary compared against a cached
+        # artifact.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/az-schema-ws
+          cat > /tmp/az-schema-ws/main.tf <<'TF'
+          terraform {
+            required_providers {
+              azurerm = { source = "hashicorp/azurerm" }
+            }
+          }
+          provider "azurerm" {
+            features {}
+            subscription_id = "00000000-0000-0000-0000-000000000000"
+          }
+          TF
+          tofu -chdir=/tmp/az-schema-ws init -backend=false -no-color
+          tofu -chdir=/tmp/az-schema-ws providers schema -json > /tmp/az-schema.json
+          # A truncated or empty document loads as "unusable" and exits 4 below, which is
+          # correct but reports the canary as blind rather than naming the cause.
+          test -s /tmp/az-schema.json
+
+      - name: Record which upstreams were actually checked
+        # Version numbers in the log are what make a green run auditable later. For a
+        # canary whose entire value is "the newest upstream still agrees", a pass without
+        # them proves only that *some* set of upstreams matched.
+        #
+        # `az version` and the SDK directory are both printed even though one upgrade
+        # moves both, because they are not the same fact: the CLI axis uses the binary and
+        # the API axis uses that directory, and a pip upgrade that leaves an older `az`
+        # earlier on PATH would show up here as a disagreement rather than as a mystery.
+        run: |
+          set -euo pipefail
+          az version --output json | python -c "import json,sys; print('az', json.load(sys.stdin)['azure-cli'])"
+          command -v az
+          tofu -chdir=/tmp/az-schema-ws version
+          python - <<'PY'
+          import json
+          from remgen.providers.azure.cli_surface import cli_source_description
+          from remgen.providers.azure.drift import model_source_description
+          print("api axis reads", model_source_description())
+          print("cli axis reads", cli_source_description())
+          with open("/tmp/az-schema.json") as handle:
+              doc = json.load(handle)
+          for key, versions in (doc.get("provider_versions") or {"(unpinned)": ""}).items():
+              print("provider", key, versions)
+          for key, entry in doc["provider_schemas"].items():
+              print("schema", key, len(entry.get("resource_schemas", {})), "resource types")
+          PY
+
+      - name: Confirm both Azure signals can actually run
+        # The Azure counterpart of the AWS job's `ac.index` check, and it covers both axes
+        # in one step because both depend on the same install.
+        #
+        # `find_sdk_dir()` searches three glob shapes -- Homebrew's `libexec/lib/python3*`,
+        # pip's `lib/python3*`, and the MSI's `lib/azure-cli/lib/python3*`. A pip install
+        # on a runner should match the second, but "should" is why this step exists: if
+        # none matches, `verify` reports exit 4 and the canary is blind, and a maintainer
+        # reading a red run deserves to be told which of the two lookups failed rather
+        # than working it out from the word "unavailable".
+        #
+        # The directory is checked for CONTENT, not just existence, and that is the one
+        # thing here that is not a mirror of the AWS step. Measured: a directory that
+        # exists but holds no service packages makes `verify` exit **3**, not 4 -- every
+        # recipe's service is simply absent, which is indistinguishable from every recipe
+        # having drifted. The canary would then file "a curated recipe no longer matches
+        # the Azure API" when the truth is that it read nothing at all. Failing here keeps
+        # a mislabelled issue from being opened. 62 packages ship with az 2.89.0, so the
+        # threshold is deliberately low: this catches empty and near-empty, not "fewer
+        # than last week", which is a legitimate upstream change rather than a broken run.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys
+          from remgen.providers.azure.cli_surface import find_az
+          from remgen.providers.azure.drift import find_sdk_dir
+          failed = False
+          sdk = find_sdk_dir()
+          if sdk is None:
+              print("::error::no bundled azure.mgmt.* SDK directory found. The API-drift "
+                    "signal cannot run and `verify` will report exit 4. _SDK_GLOBS in "
+                    "remgen.providers.azure.drift lists the three layouts it looks for; "
+                    "a pip-installed azure-cli should match the pip one.")
+              failed = True
+          else:
+              services = sorted(p.name for p in sdk.iterdir() if p.is_dir())
+              if len(services) < 10:
+                  print(f"::error::{sdk} holds only {len(services)} service package(s): "
+                        f"{services}. That is not a usable model set -- `verify` would "
+                        f"report exit 3 (API drift) because every recipe's service is "
+                        f"absent, and the canary would file a drift issue for a run that "
+                        f"checked nothing.")
+                  failed = True
+              else:
+                  print("sdk dir", sdk, f"({len(services)} service packages)")
+          az = find_az()
+          if az is None:
+              print("::error::no `az` binary found. The CLI-flag signal cannot run and "
+                    "`verify` will report exit 4.")
+              failed = True
+          else:
+              print("az binary", az)
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Verify recipes against both Azure upstreams
+        id: verify
+        # One invocation covers all three axes and reports every one regardless of what
+        # the others said, so a run cannot hide a second broken axis behind the first.
+        # Exit codes are handled individually rather than collapsed into pass/fail: 3/7/8
+        # name which half moved, while 4 means the canary went blind -- worse than red,
+        # because it reports nothing. Treating any of them as success is the specific
+        # failure this workflow exists to prevent.
+        run: |
+          set +e
+          azremgen verify --provider-schema /tmp/az-schema.json 2>&1 | tee /tmp/az-verify.txt
+          # PIPESTATUS, not $?: $? is `tee`'s status, which is 0 whenever the write
+          # succeeds. Reading it here would report every drift as a pass.
+          code="${PIPESTATUS[0]}"
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "verdict=ok" >> "$GITHUB_OUTPUT" ;;
+            3) echo "verdict=api-drift" >> "$GITHUB_OUTPUT" ;;
+            4) echo "verdict=blind" >> "$GITHUB_OUTPUT" ;;
+            7) echo "verdict=hcl-drift" >> "$GITHUB_OUTPUT" ;;
+            8) echo "verdict=cli-drift" >> "$GITHUB_OUTPUT" ;;
+            *) echo "verdict=broken" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: File or update the tracking issue
+        if: steps.verify.outputs.verdict != 'ok'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.verify.outputs.verdict }}
+          CODE: ${{ steps.verify.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # An issue rather than only a red run: a scheduled failure notifies the owner by
+        # email once and then looks identical to a workflow nobody enabled.
+        #
+        # **Every title names Azure.** Not decoration -- the AWS job files against this
+        # same repo with the same label, and titles are what the dedupe search matches on.
+        # A shared title would have an Azure API drift posted as a comment on an open AWS
+        # API drift issue, where it would be read as the same problem and lost.
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          # The single-quoted backticks below are Markdown for the issue body, not command
+          # substitution, so non-expansion is exactly what is wanted.
+          case "$VERDICT" in
+            api-drift)
+              title="Drift: a curated recipe no longer matches the Azure API"
+              lead="\`azremgen verify\` exited 3: at least one recipe's operation or its"
+              lead="$lead parameters no longer exist in the \`azure.mgmt.*\` SDK models"
+              lead="$lead bundled with the current Azure CLI."
+              lead="$lead **Do not cut a release until this is resolved** -- the affected"
+              lead="$lead recipe generates a command Azure will reject."
+              lead="$lead Note that this and CLI-flag drift share one upstream (\`azure-cli\`),"
+              lead="$lead so check below whether both moved in the same upgrade."
+              ;;
+            hcl-drift)
+              title="Drift: a recipe's Azure HCL target no longer matches the provider schema"
+              lead="\`azremgen verify\` exited 7: at least one recipe disagrees with the"
+              lead="$lead current \`hashicorp/azurerm\` schema. Either an argument or"
+              lead="$lead resource type was renamed or removed -- in which case the"
+              lead="$lead generated \`.tf\` no longer loads -- or a recipe stubs a \`TODO\`"
+              lead="$lead for an argument the provider does not require, which on an"
+              lead="$lead imported resource proposes changing a live value nobody asked to"
+              lead="$lead change. This is the one Azure upstream that moves independently of"
+              lead="$lead \`az\`, so the \`.sh\` artifacts are unaffected."
+              ;;
+            cli-drift)
+              title="Drift: a recipe renders a command the Azure CLI no longer accepts"
+              lead="\`azremgen verify\` exited 8: a recipe's rendered \`az\` command names a"
+              lead="$lead subcommand or flag the current CLI does not accept, so the"
+              lead="$lead generated script fails when run. Unlike the AWS side, this cannot"
+              lead="$lead be a CLI-versus-API skew -- both axes read the same \`az\` install"
+              lead="$lead -- so if the API axis passed, the flag was renamed while the"
+              lead="$lead underlying SDK operation kept its parameter."
+              ;;
+            blind)
+              title="Azure drift canary is blind: an upstream check could not run"
+              lead="\`azremgen verify\` exited 4, meaning at least one of the three checks"
+              lead="$lead could not run at all. **This is not a pass**, and every other"
+              lead="$lead verdict in the run is incomplete. Read the output below: either no"
+              lead="$lead bundled \`azure.mgmt.*\` SDK directory was found, no \`az\` binary"
+              lead="$lead was found, or the \`azurerm\` schema was missing or unusable."
+              lead="$lead Because two of the three axes read one \`azure-cli\` install, a"
+              lead="$lead single broken install blinds both -- so treat this as two"
+              lead="$lead unwatched signals, not one."
+              ;;
+            *)
+              title="Azure drift canary failed to run"
+              lead="\`azremgen verify\` exited $CODE, which is not one of its documented"
+              lead="$lead codes: 0 success, 3 API drift, 4 could-not-check, 7 provider-schema"
+              lead="$lead drift, 8 CLI-flag drift. The canary itself is broken and is"
+              lead="$lead reporting nothing about either upstream."
+              ;;
+          esac
+
+          gh label create upstream-drift --color B60205 \
+            --description "Filed by the scheduled upstream drift canary" 2>/dev/null || true
+
+          {
+            echo "$lead"
+            echo
+            echo "Detected by the scheduled canary, not by a push, so this may have been"
+            echo "true for up to a week. Run: $RUN_URL"
+            echo
+            echo "All three Azure axes ran and are reported below. Two of them read the"
+            echo "same \`azure-cli\` install, so one upgrade can move both -- check whether"
+            echo "more than one moved; the exit code names only the most urgent."
+            echo
+            # Quoted heredoc: the backticks are Markdown for the issue body, and an
+            # unquoted delimiter would have the shell try to execute them.
+            cat <<'MD'
+          <details><summary><code>azremgen verify</code> output</summary>
+
+          ```
+          MD
+            cat /tmp/az-verify.txt
+            cat <<'MD'
+          ```
+
+          </details>
+          MD
+          } > /tmp/az-issue-body.md
+
+          # Match on the exact title so a recurring condition updates one issue instead of
+          # opening a new one every week -- a canary that generates weekly duplicates
+          # trains people to close it unread. The titles above are Azure-specific, so this
+          # search cannot match the AWS job's issues.
+          existing="$(gh issue list --state open --label upstream-drift \
+            --search "$title in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")] | .[0].number // empty")"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/az-issue-body.md
+            echo "updated issue #$existing"
+          else
+            gh issue create --title "$title" --label upstream-drift \
+              --body-file /tmp/az-issue-body.md
+          fi
+
+      - name: Fail the run so the canary is visibly red
+        if: steps.verify.outputs.verdict != 'ok'
+        # Last step on purpose: the issue is filed first, so a failure here cannot lose
+        # the report.
+        run: |
+          echo "::error::azremgen verify exited ${{ steps.verify.outputs.code }} (${{ steps.verify.outputs.verdict }}); see the filed issue"
           exit 1

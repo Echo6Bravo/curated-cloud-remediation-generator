@@ -29,6 +29,16 @@ drift from the API definition. See ROADMAP.md.
 
 from __future__ import annotations
 
-from remgen.core.generators.hcl import render_hcl
+from remgen.core.generators.hcl import (
+    AmbiguousImportError,
+    HclGenerationError,
+    HclMergeConflict,
+    render_hcl,
+)
 
-__all__ = ["render_hcl"]
+__all__ = [
+    "AmbiguousImportError",
+    "HclGenerationError",
+    "HclMergeConflict",
+    "render_hcl",
+]

@@ -4,29 +4,37 @@ Turns Tenable Cloud Security findings into **review-ready remediation artifacts*
 script and import-aware OpenTofu/Terraform configuration — for a deliberately small, curated set of
 policies.
 
-**AWS is the only cloud implemented today.** Its command is `awsremgen`. The shared pipeline lives
-in `remgen.core` and each cloud is a provider under `remgen.providers`, so Azure, GCP and OCI can be
-added without editing the code that decides what AWS emits. There is deliberately no `remgen`
-umbrella command: see [One command per cloud](#one-command-per-cloud).
+**Two clouds have coverage: AWS (`awsremgen`) and Azure (`azremgen`).** The shared pipeline lives in
+`remgen.core` and each cloud is a provider under `remgen.providers`, so GCP and OCI can be added
+without editing the code that decides what AWS emits. Coverage is deliberately uneven and far from
+complete on either cloud — see [Known limitations](#known-limitations) for what each one does and
+does not do. There is deliberately no `remgen` umbrella command: see
+[One command per cloud](#one-command-per-cloud).
 
 **It never modifies your cloud.** It writes files to a directory. You read them, you decide, you
 run them.
 
 ```bash
 awsremgen recipes                                            # what is supported, and how risky each is
-awsremgen verify                                             # do the recipes still match the live AWS APIs?
+awsremgen verify                                             # do the recipes still match upstream, on all three axes?
 awsremgen generate --findings findings.json --out ./artifacts
 ```
 
 ## See it before you install it
 
-[`examples/`](./examples) holds a complete real run, committed: the input findings, the console
-output verbatim, and every artifact it produced. Start with
+[`examples/`](./examples) holds a complete real run **per cloud**, committed: the input findings, the
+console output verbatim, and every artifact each produced. Start with
 [`examples/README.md`](./examples/README.md), which walks through why one input produced five
 artifacts, what a `TODO` placeholder means, and what happens to a malformed finding.
 
-CI regenerates that sample on every push and fails if it differs, so it cannot quietly become a
-picture of an older version.
+Then [`examples/README.azure.md`](./examples/README.azure.md) for the Azure run. It covers only what
+*differs* rather than repeating the shared explanation: why Azure's HCL never splits by location,
+why the guard checks reachability instead of identity, why `az` prints
+`option '--subscription' will be ignored` on every line and the flag stays anyway, and the one
+rejection AWS cannot have.
+
+CI regenerates both samples on every push and fails if either differs, so neither can quietly become
+a picture of an older version.
 
 ## One command per cloud
 
@@ -49,27 +57,57 @@ specifically.
 Adding a cloud therefore adds a command (`azremgen`, `gcpremgen`) and a directory under
 `src/remgen/providers/`, and touches nothing under `src/remgen/core/`. A test in
 `tests/test_structure.py` enforces that direction by parsing the imports rather than trusting the
-convention: `core` may not import from `providers`, and no provider may import another.
+convention: `core` may not import from `providers`, and no provider may import another. That rule is
+only now testable — with one cloud it had no counterexample, and the tempting violation was real:
+Azure needs a shell generator and AWS has one. Azure got its own, sharing only the genuinely
+cloud-neutral helpers in `core`. That turned out to matter rather than being a formality, because the
+one piece that looked most reusable — the credential-scope guard — has to behave *differently* on
+Azure, where a single login legitimately spans subscriptions. Importing the AWS generator would have
+carried that guard along with the parts that do transfer.
+
+`azremgen` is the first exercise of this. It was deliberately installed *before* its recipes existed,
+because an abstraction validated against a single provider is a guess: the only way to tell
+"cloud-neutral" from "AWS with the strings moved" is to run the same pipeline down a second
+descriptor. Doing so immediately surfaced four defects in `core` — a `verify` that reported a pass
+having checked nothing, an axis that returned success while printing nothing, two crashes, and help
+text that described Azure output in AWS's vocabulary. All four are fixed, and none was visible from
+the AWS side.
+
+Writing the recipes then reversed the direction: Azure pushed back on the *design*, three times, and
+each correction is recorded in the code beside the thing it changed. A planned Key Vault recipe could
+not be written at all, because `Recipe` requires the template to name `{resource_id}` and
+`az keyvault update` does not accept `--ids`. A planned SQL Server recipe could not be written
+either, because the provider requires an administrator password through a cross-argument rule the
+machine-readable schema does not express — so satisfying it would have meant emitting a
+credential-shaped placeholder into generated configuration. And the API axis's original plan, reading
+`az`'s `aaz` command trees, was abandoned on measurement: only 5 of 18 candidate commands have an
+`aaz` leaf, and the two most valuable were both absent.
 
 ## What this is, and what it is not
 
 The name is literal, and each word in it is a limitation worth stating plainly.
 
-**Curated.** Coverage is partial by design and will stay that way. This release ships **5 recipes**,
-all AWS. Tenable Cloud Security has far more AWS policies than that, and most of them are
-*scriptable* — but scriptable is not the same as safe to script universally, and the gap between
-those two is where an automated remediation hurts someone. Every recipe here was written and
-checked individually against the AWS API definitions and AWS documentation. None were generated in
-bulk.
+**Curated.** Coverage is partial by design and will stay that way. This release ships **5 recipes**
+for AWS and **4 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
+clouds, and most of them are *scriptable* — but scriptable is not the same as safe to script
+universally, and the gap between those two is where an automated remediation hurts someone. Every
+recipe here was written and checked individually against that cloud's own API definitions and
+documentation. None were generated in bulk.
+
+The clearest evidence that this is curation rather than triage: one Azure remediation passes all
+three verification axes and is still excluded. Disabling Shared Key access on a storage account is a
+genuinely good hardening step, and it breaks every caller using an account key or a SAS — which is
+most tooling, including parts of `az` itself. That is a migration, not a single call, and shipping it
+beside three settings that break nothing would misrepresent it.
 
 **Generator, not an agent.** The tool produces text. It holds no cloud credentials, makes no cloud
 API calls, and has no code path that mutates a cloud environment. The artifacts it writes are
 inert until you run them yourself.
 
 **Best-effort.** The generated commands and configuration are derived from the AWS service models
-and public AWS documentation as they existed when the recipe was written, and are re-checked
-against your locally installed service models by `awsremgen verify`. That is a strong check, not a
-guarantee. AWS changes APIs, your account may have organizational policies (SCPs), resource
+and public AWS documentation as they existed when the recipe was written, and are re-checked by
+`awsremgen verify` against the service models, the provider schema and the CLI's own flag surface
+installed on your machine. That is a strong check, not a guarantee. AWS changes APIs, your account may have organizational policies (SCPs), resource
 states, or drift the tool cannot see, and a command that is correct in general can still fail — or
 succeed in a way you did not intend — in your specific environment. **Review every artifact before
 running it, and run it somewhere non-production first.** Treat the output as a well-informed first
@@ -84,10 +122,10 @@ Tenable, and it is not part of the Tenable Cloud Security product.
 There is no model in the loop and nothing is inferred at runtime. The chain from a finding to an
 artifact is fixed and inspectable:
 
-1. **A curated recipe** (`src/remgen/providers/aws/recipes/curated.py`) maps one Tenable Cloud
-   Security policy UUID to one AWS API call, its parameters, the equivalent Terraform/OpenTofu
-   resource type and attribute, and an explicit safety classification. These are hand-written. Each
-   carries the policy UUID from the live catalog so it can be traced back.
+1. **A curated recipe** (`src/remgen/providers/aws/recipes/`, one module per AWS service) maps one
+   Tenable Cloud Security policy UUID to one AWS API call, its parameters, the equivalent
+   Terraform/OpenTofu resource type and attribute, and an explicit safety classification. These are
+   hand-written. Each carries the policy UUID from the live catalog so it can be traced back.
 2. **Findings are parsed as untrusted input.** Every record is validated. A record that fails
    validation is collected as an explicit *rejection* rather than dropped, so the input count
    always reconciles with the output count — a silently discarded finding would be a missed
@@ -95,14 +133,91 @@ artifact is fixed and inspectable:
 3. **Two generators render the same validated call** — a fail-fast `aws` CLI shell script, and
    import-aware HCL that adopts the existing resource rather than proposing to create a new one.
    Both render from the same `ApiCall`, so they cannot disagree about what will happen. Pick one
-   with `--format cli` or `--format hcl`; both are written by default.
-4. **`awsremgen verify` re-checks every recipe against the AWS service models** on your machine
-   (read as JSON data from your AWS CLI v2 or botocore install — see *Dependencies*). If AWS has
-   renamed an operation or changed a parameter shape, this reports drift instead of emitting a
-   command that will fail.
+   with `--format cli` or `--format hcl`; both are written by default. On the HCL side, one live
+   resource gets exactly one `import` + `resource` pair no matter how many policies it violates:
+   two `import` blocks naming the same resource are *valid configuration* — `validate` passes — and
+   fail only at `plan`/`apply` against live infrastructure, so the generator merges them instead and
+   refuses to emit anything if two recipes disagree about a value.
+4. **`awsremgen verify` re-checks every recipe against all three upstreams it depends on**, because
+   they are maintained by different people and rot independently — see
+   [What `verify` actually checks](#what-verify-actually-checks). All three always run, so one
+   broken upstream cannot hide a second behind it.
 5. **`awsremgen policies` diffs the policy catalog** against a local snapshot from your last run.
    New policies are **reported, never auto-remediated** — an unreviewed policy has no recipe, and
    inventing one automatically is precisely the failure this design refuses.
+
+## What `verify` actually checks
+
+A recipe depends on **three** upstreams, owned by three different projects, which change on their own
+schedules. Checking one and reporting a pass is how a shipped artifact rots in silence, so `verify`
+checks all three and always reports all three:
+
+| Axis | Source | What breaks if it moves | Exit |
+| --- | --- | --- | --- |
+| **API operation and parameters** | AWS service models (`service-2.json`, from your AWS CLI v2 or botocore install) | The operation or a parameter was renamed — AWS rejects the call | `3` |
+| **HCL resource type and arguments** | `hashicorp/aws` provider schema (`tofu providers schema -json`) | The generated `.tf` no longer loads, or a `TODO` stub claims to be required when it is not | `7` |
+| **Rendered `aws` command** | The AWS CLI's own autocomplete index (`awscli/data/ac.index`) | The subcommand or a flag was renamed — the generated script fails with "Unknown options" | `8` |
+
+Why three rather than one: the AWS CLI is free to rename `--deletion-protection-enabled` while
+`dynamodb.UpdateTable` keeps its `DeletionProtectionEnabled` member, and the Terraform provider is
+free to rename an argument while both of those are untouched. Each of those breaks a file this tool
+already wrote, and each is invisible to the other two checks. The reverse command in each artifact —
+the one someone runs in a hurry, having just broken something — is checked too.
+
+The flag names are read from the CLI's own index rather than derived from the API member names.
+Derivation looks like kebab-casing and is not (`DBInstanceIdentifier` → `--db-instance-identifier`),
+and more importantly a derived flag would be checked against the derivation instead of against the
+CLI, making a CLI-side rename — the exact drift this exists to catch — invisible.
+
+The sources in that table are AWS's. The **axes** are cloud-neutral; the thing each axis reads is
+not, and Azure demonstrates why that distinction is in the design. Azure ships no equivalent of
+`ac.index`, so `azremgen`'s CLI axis asks `az <command> --help` and parses it — the CLI's own
+statement of its surface. That means it needs `az` installed rather than a bundled data file, and
+that a missing `az` is reported as could-not-check rather than as a pass. Which `az` answered is
+printed on the `Flag source:` line, so a drift report can be reproduced.
+
+**A check that could not run is never reported as a pass.** A missing axis exits `4`, which the
+weekly [drift canary](./.github/workflows/drift-canary.yml) treats as worse than red: a red run names
+a fix, a blind one reports nothing. No axis is entirely free of setup, and what each needs differs by
+cloud: AWS's API axis reads a data file its CLI already bundles, Azure's two need `az` itself present,
+and **both** clouds' HCL axis needs a schema you generate, because producing one downloads the
+provider and this tool does not shell out:
+
+```bash
+mkdir -p /tmp/schema-ws
+cat > /tmp/schema-ws/main.tf <<'TF'
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws" }
+  }
+}
+TF
+tofu -chdir=/tmp/schema-ws init -backend=false
+tofu -chdir=/tmp/schema-ws providers schema -json > /tmp/schema.json
+
+awsremgen verify --provider-schema /tmp/schema.json   # or export REMGEN_TF_SCHEMA=/tmp/schema.json
+```
+
+For Azure, the same procedure with `azurerm = { source = "hashicorp/azurerm" }`, written to a
+different path, then `azremgen verify --provider-schema /tmp/az-schema.json`. Two schemas, not one:
+`tofu providers schema -json` keys its output by provider source address, so a document is for one
+provider. Handing either command the other cloud's schema is caught by that lookup and reported as
+`schema unusable` with exit `4` — could-not-check, not a pass.
+
+### What the schema check found on the shipped recipes
+
+It was not a formality. Four arguments this generator stubbed as `TODO` because the AWS provider
+*documentation* describes them as required — `aws_dynamodb_table`'s `hash_key` and `attribute` block,
+`aws_db_instance`'s `engine`, `allocated_storage` and `username` — are `optional` in the schema. Docs
+describe what *creating* a resource needs; the schema describes what the parser demands, and only two
+of the six stubs were genuinely required.
+
+On a resource adopted by `import`, that gap is not cosmetic. Omitting an optional argument means
+"keep the live value" and produces no diff. Emitting `hash_key = "TODO"` means "set it to the literal
+string `TODO`" — and `hash_key` forces replacement, so applying it **destroys and recreates the
+table**. `tofu validate` accepts both files identically. That is why a false "the provider requires
+this" claim is now a *failure* of the HCL axis rather than a redundant line, and why the four stubs
+are gone from the recipes and from `examples/sample-output/`.
 
 ## Safety is a level, not a disclaimer
 
@@ -128,8 +243,12 @@ Two consequences of this that are easy to miss:
   note, and reversal command is emitted in the artifact itself, not only here. A warning in a
   different file is a warning that gets skipped.
 
-Of the 5 shipped recipes, **1 is `safest`** and **4 are `caution`** — so a default run is
-conservative, and the majority of this release requires you to opt in explicitly.
+Of the 5 shipped AWS recipes, **1 is `safest`** and **4 are `caution`** — so a default run is
+conservative, and the majority of the AWS set requires you to opt in explicitly. Of the 4 shipped
+Azure recipes, **4 are `safest`**, which is not a claim that Azure is safer: it is what a first
+recipe set looks like when the riskier candidates are deferred rather than reclassified. The one
+Azure remediation that would have landed in a higher tier was excluded instead — see
+[What this is, and what it is not](#what-this-is-and-what-it-is-not).
 
 ## Output is split so a human can actually review it
 
@@ -164,10 +283,70 @@ same way.
 `--max-per-file` adds a further *soft* cap for reviewability (default 500, `0` disables it). It
 does not and cannot relax the cloud/account/region split.
 
-Generated shell scripts include an identity preflight: they check the caller's account with
+Generated AWS shell scripts include an identity preflight: they check the caller's account with
 `aws sts get-caller-identity` and **exit non-zero without running anything** if it does not match
 the account the file was generated for. HCL sets `allowed_account_ids` on the provider for the same
 reason.
+
+**Azure's preflight deliberately does the opposite, and the difference is not an inconsistency.** An
+AWS credential set names exactly one account, so "these credentials are for the wrong account" is a
+fact a script can establish and refuse on. One `az login` routinely spans many subscriptions, and
+`--subscription` is a global argument every mutating command accepts — so refusing on an
+active-subscription mismatch would be both unhelpful (the user's default is often simply a different
+subscription they legitimately hold) and misleading, because it implies the active subscription is
+what determines the target when the command names it explicitly. The Azure script checks
+*reachability* instead and reports a mismatch as information. That relaxation is only safe while
+every command pins its subscription, so it is enforced at render time: `azremgen` refuses to write a
+command that does not, rather than trusting the recipe author.
+
+### The cross-subscription conflict, and why only Azure has one
+
+Pinning `--subscription` on every command turned out not to be sufficient, and the gap is worth
+stating plainly because it was real shipped behaviour rather than a hypothetical.
+
+An ARM resource id begins `/subscriptions/<id>/`, so an Azure finding names its subscription
+**twice**: once in `accountId` and once inside `resourceId`. Every recipe addresses its resource with
+`--ids`, because a recipe's command template must name the resource id and an ARM id can only be
+passed that way. And `az` resolves `--ids` *in preference to* `--subscription` — it overwrites every
+argument carrying an `id_part` from the parsed id, and `--subscription` is one of them.
+
+So a finding whose `accountId` was subscription A and whose `resourceId` named subscription B
+produced a script that:
+
+- headed itself `Scope: azure subscription A`,
+- ran a preflight confirming the caller can reach A,
+- and then mutated a resource in **B**, which the guard never mentioned.
+
+Exit code 0. Artifacts written. Nothing warned. The HCL half had the same shape:
+`subscription_id = A` beside an `import` block whose id named B.
+
+Such a finding is now **rejected**, counted separately in the run summary, and reported with the
+reason:
+
+```
+    rejected:           3
+      scope conflicts:  1 (subscription mismatch)
+```
+
+A rejection rather than a warning, and rather than trusting the id over `accountId`: the two
+statements disagree and the tool has no basis for deciding which one the exporter meant. Only that
+one finding is refused — the rest of the run proceeds — because a whole-run failure would make one
+malformed record block work that is fine.
+
+**There is no AWS equivalent and that is not a gap in coverage.** No AWS identifier this tool renders
+contains an account id, so a bucket or table name cannot contradict `accountId`, and
+`sts get-caller-identity` is a sufficient guard on its own. The check is therefore declared per
+provider — `None` for AWS meaning *this cloud has no such conflict to detect* — rather than being a
+shared check that AWS passes vacuously. A shared check would read as though AWS were merely behind.
+
+Two things are deliberately **not** treated as conflicts. A resource-group mismatch, because a
+finding carries no resource group and so there is nothing to disagree with. And location, because an
+Azure `.tf` legitimately spans locations. A non-ARM id (a bare account name) is also not a conflict:
+it names no subscription, so it cannot contradict one.
+
+See [`examples/README.azure.md`](./examples/README.azure.md) — the committed Azure sample includes
+exactly such a record, and CI asserts both that the run still refuses it and that the wrong
+subscription id appears in no artifact.
 
 ## Dependencies and versions
 
@@ -178,9 +357,10 @@ something that produces commands you will run against production.
 | Requirement | Version | Required? | Why |
 | --- | --- | --- | --- |
 | Python | **≥ 3.10** | **Yes** | Runtime. Developed and tested on 3.14.6. |
-| AWS CLI v2 **or** botocore | any recent | **For `verify` only** | Source of the AWS service-model JSON. Read **as data files from disk** — never imported as a Python package, never invoked. Generation works without it; `awsremgen verify` degrades and tells you so. |
-| AWS CLI v2 | any recent | To *run* the output | Only you run the generated script. The tool never shells out to `aws`. |
-| OpenTofu | ≥ 1.6 (tested 1.12.5) | To *run* the output | Never invoked by the tool. |
+| AWS CLI v2 **or** botocore | any recent | **For `verify`'s API axis** | Source of the AWS service-model JSON. Read **as data files from disk** — never imported as a Python package, never invoked. Generation works without it; `awsremgen verify` reports the axis as not run and tells you so. |
+| AWS CLI v2 | any recent | **For `verify`'s CLI axis**, and to *run* the output | Its `awscli/data/ac.index` is the CLI's own record of the flags it accepts. Read read-only as a SQLite file; the tool never shells out to `aws`. Both the package layout (Homebrew, pip) and the PyInstaller bundle (official installer) are found. |
+| Azure CLI (`az`) | any recent (tested 2.89.0) | **For both of `azremgen verify`'s Azure-specific axes**, and to *run* the output | Two unrelated things are read from it. The API axis parses the 62 `azure.mgmt.*` SDK packages bundled inside it, with `ast` — nothing imported, nothing executed, no network. The CLI axis runs `az <command> --help` and parses the result, because Azure ships no `ac.index` equivalent; **only** `--help`, asserted by a test that records every argv the module spawns. Override the SDK location with `REMGEN_AZURE_SDK_DIR` or the binary with `REMGEN_AZ_CLI`. Generation works without `az`; both axes report could-not-check. |
+| OpenTofu | ≥ 1.6 (tested 1.12.5) | **To generate `verify`'s schema input**, and to *run* the output | Never invoked by the tool. You run `tofu providers schema -json` yourself and pass the file to `--provider-schema`. Both clouds' HCL axes read a schema this way; the provider you generate it for has to match the cloud you are verifying. |
 | Terraform | ≥ 1.6 | Optional alternative | Never invoked, never a dependency — see [NOTICE.md](./NOTICE.md) for the BUSL-1.1 analysis. |
 | pytest / ruff / bandit | see `[dev]` extra | Development only | `pip install -e '.[dev]'` |
 
@@ -205,8 +385,8 @@ works from a clone.
 # 1. See what exists and how risky it is, before generating anything
 awsremgen recipes
 
-# 2. Confirm the recipes still match the AWS APIs on your machine
-awsremgen verify
+# 2. Confirm the recipes still match upstream on your machine, on all three axes
+awsremgen verify --provider-schema /tmp/schema.json
 
 # 3. Generate. Default safety level is 'safest'; default output is ./artifacts
 awsremgen generate --findings findings.json --out ./artifacts
@@ -242,12 +422,40 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 
 ## Known limitations
 
-- **Coverage is 5 policies, AWS only.** If your finding's policy has no recipe, it is reported as
-  unsupported (`-v` lists them). That is the honest answer, not a gap to be filled by guessing.
-- **Azure, GCP and OCI are not implemented.** The structure to hold them exists — `remgen.core`
-  is cloud-neutral and the output layout already splits by cloud — but structure is not coverage.
-  Each cloud needs its own recipe set, safety analysis, IaC resource mapping and API-definition
-  verifier, none of which is a parameterization of the AWS work.
+- **Coverage is 5 AWS policies and 4 Azure policies.** If your finding's policy has no recipe, it is
+  reported as unsupported (`-v` lists them). That is the honest answer, not a gap to be filled by
+  guessing.
+- **Azure's coverage is 2 services, and one gap is deliberate and named.**
+  `azremgen` covers three storage-account settings and SQL database TDE. Two planned recipes were
+  dropped rather than approximated, and both remain visible as unsupported policies:
+  Key Vault RBAC (`az keyvault update` does not accept `--ids`, so a template cannot address the
+  resource at all) and SQL Server minimum TLS (`azurerm_mssql_server` requires an administrator
+  password through a rule the schema does not express, so the block would carry a credential-shaped
+  placeholder). Reasons are recorded in
+  [`src/remgen/providers/azure/recipes/`](./src/remgen/providers/azure/recipes/), beside where the
+  recipe would have gone.
+- **Azure's three `verify` axes are all implemented, and they read three different sources.** The
+  API axis parses the 62 `azure.mgmt.*` SDK packages bundled inside `az` — Azure ships no botocore
+  equivalent, so there is no single vendor JSON model to read; the HCL axis reads the `azurerm`
+  schema you generate; the CLI axis asks your installed `az` what flags each command accepts, and
+  names the CLI version it asked. All three are checked per run and none of them reports a pass when
+  it could not run.
+- **Azure HCL is not split by location, and that is correct rather than missing.** An `azurerm`
+  provider block carries no location — each resource carries its own — so a `.tf` file may span
+  locations. Subscription remains a hard boundary. The scope block is also a **weaker guard than the
+  AWS one**, because `azurerm` has no `allowed_account_ids` equivalent: `subscription_id` selects a
+  subscription rather than asserting which one is acceptable. Confirm the workspace's provider
+  yourself; the generated file says so where the AWS one can rely on the provider to fail.
+- **Every Azure `az` command in a generated script prints a warning, and it is expected.** Each
+  recipe addresses its resource with `--ids`, and `az` then reports that `--subscription` "will be
+  ignored". The flag stays: the subscription is still explicit because the ARM id contains it, and
+  the script generator refuses to render a command that pins neither.
+- **GCP and OCI are not implemented.** The structure to hold them exists — `remgen.core` is
+  cloud-neutral and the output layout already splits by cloud — but structure is not coverage. Each
+  cloud needs its own recipe set, safety analysis, IaC resource mapping and API-definition verifier,
+  none of which is a parameterization of the AWS work. Azure is the evidence for that rather than a
+  counterexample: its API axis had no equivalent of botocore's bundled models, and the source it
+  ended up reading was chosen by measurement after the first plan proved to cover 5 of 18 commands.
 - **No live Tenable Cloud Security API adapter.** Findings come from a JSON file you export. An
   API adapter needs tenant credentials to verify against, and an adapter that has never run
   against a real tenant would be untested code wearing the costume of a feature. The interface it
@@ -255,8 +463,13 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 - **No boto3/Python-SDK output format.** It would be a third rendering of the same API call with
   no capability the CLI script lacks, and each additional format is another surface that can drift
   from the service model.
-- **`verify` cannot check semantics** — it confirms the operation and parameters still exist and
-  have the expected shape. It cannot confirm that AWS's *behavior* is unchanged.
+- **`verify` cannot check semantics** — on all three axes it confirms that names still exist and
+  shapes still match. It cannot confirm that AWS's *behavior* is unchanged, that a flag still means
+  what it meant, or that a provider argument still maps to the same API field.
+- **`verify`'s HCL axis needs a schema you generate.** Producing one downloads the provider, and a
+  tool that emits commands against production should not shell out to something that fetches
+  hundreds of megabytes from a registry, so it takes a file rather than running `tofu`. Without one
+  the axis reports "not run" (exit `4`) — never a pass.
 - **Your account can still reject a valid command** (SCPs, permission boundaries, resource state).
   The generated scripts fail fast and loudly when that happens rather than continuing.
 

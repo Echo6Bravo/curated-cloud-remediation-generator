@@ -46,7 +46,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from remgen.core.drift import DriftResult
-from remgen.core.model import Recipe
+from remgen.core.model import Finding, Recipe
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,37 @@ class Provider:
             v2 (v1 is not tested)"``. Named in the run README because "install that
             cloud's CLI" is not something a reader can act on -- the version matters,
             and which versions are tested is a claim only the provider can make.
+        verify_cli_surface: Checks that each recipe's rendered console command still
+            names a real subcommand with real flags, against that CLI's own record of
+            them. A third axis, distinct from ``verify_recipes``: the API model and
+            the CLI's flag spelling for it change independently, and the artifact runs
+            the latter. Returns ``(ok, checked, label, detail)`` per recipe -- a tuple
+            rather than a shared result type because each cloud's CLI has a different
+            notion of what a flag *is* (``az`` groups differ from ``aws``
+            subcommands), and a common dataclass derived from one CLI would be a guess.
+            ``None`` when the cloud has no such check yet, which is reported as not
+            run.
+        describe_cli_surface_source: Where that record was read from, or
+            ``"unavailable"``.
+        scope_conflict: Returns why a finding's ``resource_id`` contradicts its
+            ``account_id``, or ``None`` when it does not. ``None`` for the whole hook
+            means the cloud has no such conflict to detect, which is a fact about the
+            cloud rather than a gap: AWS identifiers do not contain an account, so a
+            bucket name cannot disagree with ``account_id``, and there is nothing to
+            check. Azure's do -- an ARM id names its subscription, and ``az`` resolves
+            ``--ids`` in preference to ``--subscription`` -- so a mismatch sends the
+            mutation somewhere the script's own guard has just declared out of scope.
+            Called during ``generate``, before anything is rendered, and a non-``None``
+            return rejects that one finding rather than failing the run: the other
+            findings are still correct, and a rejection is reported and counted where a
+            dropped one would look compliant.
+        tf_provider_source: The Terraform/OpenTofu provider's source address without
+            a registry host, e.g. ``"hashicorp/aws"``. Used to find this cloud's
+            entry in a ``tofu providers schema -json`` document, which keys providers
+            by full registry address -- and the host differs between OpenTofu and
+            Terraform for the same provider, so the match is on this suffix. Empty
+            means the cloud has no HCL generation, and the schema check is skipped
+            rather than reported as failing.
     """
 
     cloud: str
@@ -110,6 +141,12 @@ class Provider:
     catalog_export_hint: str = ""
     models_unavailable_hint: str = ""
     cli_requirement: str = ""
+    tf_provider_source: str = ""
+    verify_cli_surface: (
+        Callable[[tuple[Recipe, ...]], tuple[tuple[bool, bool, str, str], ...]] | None
+    ) = None
+    describe_cli_surface_source: Callable[[], str] | None = None
+    scope_conflict: Callable[[Finding], str | None] | None = None
 
     def __post_init__(self) -> None:
         # The cloud id becomes a path segment. A value containing a separator or
