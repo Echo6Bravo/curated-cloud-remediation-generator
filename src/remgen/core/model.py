@@ -33,11 +33,23 @@ from enum import Enum
 # escaping, because an allowlist fails closed.
 # --------------------------------------------------------------------------
 
-#: Conservative allowlist for AWS resource identifiers, names and ARNs.
-#: Permits alphanumerics and the punctuation AWS actually uses in identifiers.
-#: Deliberately excludes shell metacharacters, quotes, backslashes, newlines,
-#: ``$``, backticks and HCL interpolation markers.
-_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/=+@ -]{0,1023}$")
+#: Conservative allowlist for cloud resource identifiers, names and ARNs.
+#: Permits alphanumerics and the punctuation cloud providers actually use in
+#: identifiers. Deliberately excludes shell metacharacters, quotes, backslashes,
+#: newlines, ``$``, backticks and HCL interpolation markers.
+#:
+#: A leading ``/`` is permitted because an Azure resource ID *is* a path
+#: (``/subscriptions/<id>/resourceGroups/...``), and rejecting it would make the
+#: primary identifier of an entire cloud unrepresentable. That is safe only in
+#: combination with :func:`validate_path_segment`, which is what guards the
+#: values that become filenames -- see the note there. Permitting the leading
+#: slash here without that guard would not be safe.
+_SAFE_IDENTIFIER = re.compile(r"^/?[A-Za-z0-9][A-Za-z0-9._:/=+@ -]{0,1023}$")
+
+#: Values that become a *single* path component of an output filename. Far
+#: stricter than :data:`_SAFE_IDENTIFIER`: no ``/``, no ``.`` at all, so neither
+#: a separator nor a traversal component can appear.
+_SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 #: Terraform/OpenTofu resource *labels* must be a valid HCL identifier.
 _HCL_LABEL_INVALID = re.compile(r"[^A-Za-z0-9_-]")
@@ -52,7 +64,12 @@ class UnsafeIdentifierError(ValueError):
 
 
 def validate_identifier(value: str, *, field_name: str) -> str:
-    """Return ``value`` if it is a safe AWS identifier, else raise.
+    """Return ``value`` if it is a safe cloud identifier, else raise.
+
+    This is the check for values that are *rendered into* an artifact -- a
+    command argument, an HCL attribute, an import id. It is **not** sufficient
+    for a value that becomes part of a filename: see
+    :func:`validate_path_segment`.
 
     Args:
         value: Candidate identifier taken from finding data.
@@ -66,8 +83,43 @@ def validate_identifier(value: str, *, field_name: str) -> str:
         raise UnsafeIdentifierError(f"{field_name}: expected a non-empty string, got {value!r}")
     if not _SAFE_IDENTIFIER.match(value):
         raise UnsafeIdentifierError(
-            f"{field_name}: {value!r} contains characters that are not permitted in an "
-            f"AWS identifier. Refusing to generate rather than escape."
+            f"{field_name}: {value!r} contains characters that are not permitted in a "
+            f"cloud identifier. Refusing to generate rather than escape."
+        )
+    return value
+
+
+def validate_path_segment(value: str, *, field_name: str) -> str:
+    """Return ``value`` if it is safe as one component of a filename, else raise.
+
+    Separate from :func:`validate_identifier` because the two answer different
+    questions, and conflating them was a real vulnerability rather than a
+    theoretical one. Findings come from an external export, and
+    :attr:`~remgen.core.layout.OutputUnit.filename` interpolates ``account_id``
+    and ``region`` directly. ``validate_identifier`` permits ``/`` (legitimately
+    -- S3 keys and Azure resource IDs contain them), so an ``account_id`` of
+    ``1/../../../../tmp/x`` passed validation and wrote both artifacts *outside*
+    the ``--out`` directory. Verified end to end before this function existed.
+
+    The rule is therefore positional, not per-cloud: a value that becomes a path
+    component may contain no separator and no ``.`` whatsoever, so neither
+    ``../`` nor a bare ``..`` can be constructed. Every cloud's credential-scope
+    id and region already satisfy it -- AWS account ids are digits, Azure
+    subscription ids are UUIDs, regions and locations are alphanumeric with
+    dashes -- so this rejects malformed input rather than constraining any real
+    cloud's vocabulary.
+
+    Raises:
+        UnsafeIdentifierError: If the value could alter the write path.
+    """
+    if not isinstance(value, str) or not value:
+        raise UnsafeIdentifierError(f"{field_name}: expected a non-empty string, got {value!r}")
+    if not _SAFE_PATH_SEGMENT.match(value):
+        raise UnsafeIdentifierError(
+            f"{field_name}: {value!r} is not usable as a filename component. This value "
+            f"becomes part of an output path, so it may contain only letters, digits, "
+            f"'_' and '-' -- no '/' and no '.', which could redirect the write outside "
+            f"the output directory. Refusing to generate rather than sanitize."
         )
     return value
 
@@ -108,7 +160,22 @@ def to_hcl_label(value: str) -> str:
     HCL labels cannot contain the ``:``, ``/`` or ``.`` characters common in
     ARNs, so they are folded to underscores. A leading digit is prefixed because
     HCL identifiers may not start with one.
+
+    A **path-shaped** identifier -- one beginning with ``/``, which is what every
+    Azure resource ID looks like -- is reduced to its last segment first. Folding
+    the whole thing produced a 131-character label
+    (``subscriptions_0000..._resourcegroups_rg_providers_microsoft_storage_...``)
+    in which the only distinguishing part sits at the end, past the point anyone
+    reads. The label is cosmetic -- ``import`` is what binds a block to a real
+    resource, and it carries the full id -- so shortening it cannot retarget
+    anything, and collisions are handled by the caller
+    (:func:`~remgen.core.generators.hcl.group_targets` counts labels per resource
+    type and disambiguates with the scope). This branch is unreachable for any
+    identifier that was valid before it existed: a leading ``/`` was rejected
+    outright, so no AWS label can change shape.
     """
+    if value.startswith("/"):
+        value = value.rstrip("/").rsplit("/", 1)[-1] or value
     label = _HCL_LABEL_INVALID.sub("_", value)
     label = re.sub(r"_{2,}", "_", label).strip("_")
     if not label:
@@ -163,6 +230,19 @@ class SafetyTier(str, Enum):
     #: Touches the data path, needs replacement, or risks an outage.
     #: Not present in v1; reserved so the tiering is future-proof.
     DISRUPTIVE = "disruptive"
+
+    @property
+    def rank(self) -> int:
+        """Position in the risk ordering, lowest risk first.
+
+        Lives on the enum because more than one caller needs to compare two tiers:
+        the CLI orders the withheld-count breakdown by it, and the HCL generator
+        files a block that applies several policies under the riskiest of their
+        tiers. Two private copies of this ordering that disagreed would put a
+        ``caution`` change under a ``SAFEST`` banner, which is the one thing the
+        tiering exists to prevent.
+        """
+        return {SafetyTier.SAFEST: 0, SafetyTier.CAUTION: 1, SafetyTier.DISRUPTIVE: 2}[self]
 
 
 @dataclass(frozen=True)
@@ -409,7 +489,15 @@ class Finding:
     def __post_init__(self) -> None:
         validate_identifier(self.policy_id, field_name="policy_id")
         validate_identifier(self.resource_id, field_name="resource_id")
-        validate_identifier(self.region, field_name="region")
-        validate_identifier(self.account_id, field_name="account_id")
+        # region and account_id are held to the stricter path-segment rule, not
+        # because they are more sensitive but because of where they *go*:
+        # OutputUnit.filename interpolates both into a filename. Under the
+        # identifier rule alone -- which permits '/', as S3 keys and Azure
+        # resource IDs require -- an account_id of '1/../../../../tmp/x' wrote
+        # both artifacts outside the --out directory. Validated here, at the
+        # boundary where untrusted findings data enters, so no generator has to
+        # remember to.
+        validate_path_segment(self.region, field_name="region")
+        validate_path_segment(self.account_id, field_name="account_id")
         if self.resource_name:
             validate_identifier(self.resource_name, field_name="resource_name")

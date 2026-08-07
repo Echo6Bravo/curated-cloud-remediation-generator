@@ -1,5 +1,5 @@
 
-awsremgen 0.1.0 -- generated 2026-08-05T15:39:05+00:00
+awsremgen 0.1.0 -- generated 2026-08-06T12:28:26+00:00
 
   Records read:         10
     usable findings:    8
@@ -9,7 +9,7 @@ awsremgen 0.1.0 -- generated 2026-08-05T15:39:05+00:00
   Remediations written: 6
     no recipe:          1
 
-  Output: artifacts  (7 file(s), 30.3 KB)
+  Output: artifacts  (7 file(s), 29.4 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 accounts in aws.
   Split by account because no format can target more than one account at a time.
@@ -20,13 +20,13 @@ awsremgen 0.1.0 -- generated 2026-08-05T15:39:05+00:00
   Each file must be run with credentials for the account in its name.
     remediate-aws-111111111111-all-regions.sh  (4.1 KB)
     remediate-aws-222222222222-all-regions.sh  (3.0 KB)
-    remediate-aws-111111111111-us-east-1.tf  (4.6 KB)
+    remediate-aws-111111111111-us-east-1.tf  (4.0 KB)
     remediate-aws-111111111111-us-west-2.tf  (2.0 KB)
-    remediate-aws-222222222222-us-east-1.tf  (3.6 KB)
+    remediate-aws-222222222222-us-east-1.tf  (3.3 KB)
     README.md  (8.7 KB)
     manifest.json  (4.2 KB)
 
-  Note: 3 HCL block(s) contain TODO placeholders for provider-required
+  Note: 2 HCL block(s) contain TODO placeholders for provider-required
   arguments that findings do not carry. Complete them before applying.
 
   No recipe available: 1 finding(s) across 1 policy/policies.
@@ -34,7 +34,7 @@ awsremgen 0.1.0 -- generated 2026-08-05T15:39:05+00:00
     c1f0a4d2-77b3-4e59-9a10-8e2d63b4c7f1
 
 2 input record(s) were rejected and not remediated:
-  [record 8] resource_id: 'acme-logs; aws s3 rb s3://acme-prod --force' contains characters that are not permitted in an AWS identifier. Refusing to generate rather than ...
+  [record 8] resource_id: 'acme-logs; aws s3 rb s3://acme-prod --force' contains characters that are not permitted in a cloud identifier. Refusing to generate rather than...
   [record 9] missing required field(s): region
 
 Review the output before running anything. This tool made no AWS changes.

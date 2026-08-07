@@ -1,0 +1,85 @@
+{
+  "findings": [
+    {
+      "policyId": "bed905d4-758c-4698-9ed8-4cdd4271eb4e",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Storage/storageAccounts/acmeprodlogs01",
+      "resourceName": "acmeprodlogs01",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
+      "_comment": "Same storage account as the record above, a different policy. Deliberate: two recipes targeting one resource must produce ONE import block and ONE resource block applying both settings. Two import blocks naming the same resource are valid configuration -- validate passes -- and fail only at plan/apply against live infrastructure.",
+      "policyId": "0662810d-c71d-46a3-a937-e1c2b24792e4",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Storage/storageAccounts/acmeprodlogs01",
+      "resourceName": "acmeprodlogs01",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
+      "_comment": "A second location in the SAME subscription. Azure's .tf does NOT split on this, unlike AWS's -- an azurerm provider block carries no location, so one file legitimately spans both.",
+      "policyId": "29307516-af03-445b-a22c-5dfa62598b22",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-eu-analytics/providers/Microsoft.Storage/storageAccounts/acmeeuexports",
+      "resourceName": "acmeeuexports",
+      "region": "westeurope",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
+      "policyId": "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Sql/servers/acme-sql-prod/databases/billing",
+      "resourceName": "billing",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
+      "_comment": "A SECOND subscription. This is a hard boundary in both formats: an azurerm provider is configured with one subscription_id, and one az login context addresses one subscription, so this must produce its own .sh and its own .tf.",
+      "policyId": "bed905d4-758c-4698-9ed8-4cdd4271eb4e",
+      "resourceId": "/subscriptions/d27e6b04-93a1-4f58-8c7d-31fb9e2a604c/resourceGroups/rg-sandbox/providers/Microsoft.Storage/storageAccounts/acmesandboxdata",
+      "resourceName": "acmesandboxdata",
+      "region": "eastus",
+      "accountId": "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c"
+    },
+
+    {
+      "_comment": "Duplicate of the acmeeuexports finding above. Real exports repeat a finding when the same violation is seen in two scans. remgen collapses it and reports the count.",
+      "policyId": "29307516-af03-445b-a22c-5dfa62598b22",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-eu-analytics/providers/Microsoft.Storage/storageAccounts/acmeeuexports",
+      "resourceName": "acmeeuexports",
+      "region": "westeurope",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+
+    {
+      "_comment": "A policy id with no curated recipe, reported as unsupported rather than guessed at. This id is SYNTHETIC, unlike the four above it -- it stands in for the Key Vault RBAC policy, which is deliberately uncovered because `az keyvault update` accepts no --ids and so no recipe can pin its subscription the way every shipped one does. The behaviour being demonstrated is what happens to ANY unmatched id, which does not depend on the id being real.",
+      "policyId": "d1b5f4a0-2c8e-4a71-b6f3-5e90c7d2a184",
+      "resourceId": "/subscriptions/d27e6b04-93a1-4f58-8c7d-31fb9e2a604c/resourceGroups/rg-sandbox/providers/Microsoft.KeyVault/vaults/acme-sandbox-kv",
+      "resourceName": "acme-sandbox-kv",
+      "region": "eastus",
+      "accountId": "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c"
+    },
+
+    {
+      "_comment": "REJECTED ON PURPOSE, and the rejection is Azure-specific. This record is well-formed and its resource_id is a valid ARM id -- but the id names subscription 99999999... while accountId says 8f4a1c62.... Because every recipe addresses its resource with --ids, and az resolves --ids in preference to --subscription, generating this would emit a script headed 'Scope: subscription 8f4a1c62...', with a preflight confirming 8f4a1c62..., that mutated a resource in 99999999.... See 'The cross-subscription conflict, and why only Azure has one' in README.md, and section 4 of examples/README.azure.md.",
+      "policyId": "bed905d4-758c-4698-9ed8-4cdd4271eb4e",
+      "resourceId": "/subscriptions/99999999-9999-9999-9999-999999999999/resourceGroups/rg-platform-prod/providers/Microsoft.Storage/storageAccounts/acmewrongsub",
+      "resourceName": "acmewrongsub",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+
+    {
+      "_comment": "REJECTED ON PURPOSE. The resource id carries shell metacharacters. Identifiers are allowlisted and the tool refuses to render rather than escaping -- a rejected finding is a visible gap, an escaped one is a surprise waiting in someone's shell.",
+      "policyId": "bed905d4-758c-4698-9ed8-4cdd4271eb4e",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-x/providers/Microsoft.Storage/storageAccounts/acme$(az account clear)",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+
+    {
+      "_comment": "REJECTED ON PURPOSE. No accountId. The subscription is part of every command and part of the file scope, so defaulting it would send a remediation somewhere nobody asked for.",
+      "policyId": "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Sql/servers/acme-sql-prod/databases/reporting",
+      "resourceName": "reporting",
+      "region": "eastus"
+    }
+  ]
+}

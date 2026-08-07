@@ -6,10 +6,17 @@ structure of a generated artifact.** Everything else here is secondary.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from remgen.core.generators.common import TemplateError, comment_block, render_template
-from remgen.core.generators.hcl import assign_labels, render_hcl
+from remgen.core.generators.hcl import (
+    AmbiguousImportError,
+    HclMergeConflict,
+    group_targets,
+    render_hcl,
+)
 from remgen.core.generators.hcl import render_one as render_hcl_one
 from remgen.core.layout import Format, plan_units
 from remgen.core.model import (
@@ -19,6 +26,7 @@ from remgen.core.model import (
     Finding,
     HclTarget,
     Recipe,
+    SafetyTier,
     UnsafeIdentifierError,
 )
 from remgen.providers.aws import AWS
@@ -263,14 +271,25 @@ def test_hcl_raises_if_asked_to_render_a_recipe_without_a_target():
 # ---------------------------------------------------------------------------
 
 
-def test_same_name_in_two_accounts_gets_distinct_labels():
+def _labels(pairs) -> list[str]:
+    return [t.label for t in group_targets(pairs)]
+
+
+def test_same_name_in_two_regions_gets_distinct_labels():
+    """Two labels for two resources whose names fold together.
+
+    Uses two regions in *one* account rather than two accounts: two accounts sharing
+    a resource name is a different and worse condition, and `group_targets` now
+    refuses it outright -- see
+    test_two_accounts_sharing_a_resource_name_refuse_to_render. The label rule under
+    test here is the same either way.
+    """
     recipe = _recipe()
     pairs = [
-        (recipe, _finding(region="us-east-1", account_id="111111111111")),
-        (recipe, _finding(region="us-west-2", account_id="222222222222")),
+        (recipe, _finding(region="us-east-1", resource_id="a/b")),
+        (recipe, _finding(region="us-west-2", resource_id="a_b")),
     ]
-    labels = assign_labels(pairs)
-    assert len(set(labels.values())) == 2
+    assert len(set(_labels(pairs))) == 2
 
     out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
     declared = [line for line in out.splitlines() if line.startswith('resource "aws_thing"')]
@@ -280,8 +299,7 @@ def test_same_name_in_two_accounts_gets_distinct_labels():
 
 def test_unique_resource_id_keeps_the_short_label():
     # Disambiguation is applied only where needed, so the common case stays legible.
-    pairs = [(_recipe(), _finding(resource_id="only-one"))]
-    assert assign_labels(pairs) == {0: "only-one"}
+    assert _labels([(_recipe(), _finding(resource_id="only-one"))]) == ["only-one"]
 
 
 def test_same_name_across_different_resource_types_is_not_disambiguated():
@@ -296,30 +314,38 @@ def test_same_name_across_different_resource_types_is_not_disambiguated():
             import_id_template="{resource_id}",
         ),
     )
-    labels = assign_labels([(a, _finding()), (b, _finding())])
-    assert labels == {0: "my-bucket", 1: "my-bucket"}
+    assert _labels([(a, _finding()), (b, _finding())]) == ["my-bucket", "my-bucket"]
 
 
-def test_identical_findings_still_get_unique_labels():
-    # The CLI dedupes these, so this is a generator-level backstop. An ordinal is
-    # used rather than a content digest, which would be identical for identical
-    # findings and so collide again.
+def test_two_ids_that_fold_to_one_label_still_get_unique_labels():
+    """The ordinal backstop, reached without any duplicate input.
+
+    ``to_hcl_label`` folds punctuation to underscores, so ``a/b`` and ``a_b`` are two
+    genuinely different resources whose labels collide -- and after the
+    account+region suffix is appended they *still* collide, because both resources
+    are in the same account and region. An ordinal is used rather than a digest,
+    which would be stable but unreadable, and merging is not an option: these are
+    two different resources with two different import ids.
+    """
     recipe = _recipe()
-    pairs = [(recipe, _finding()), (recipe, _finding()), (recipe, _finding())]
-    labels = assign_labels(pairs)
-    assert len(set(labels.values())) == 3
+    pairs = [(recipe, _finding(resource_id="a/b")), (recipe, _finding(resource_id="a_b"))]
+    labels = _labels(pairs)
+    assert len(set(labels)) == 2, f"labels collided: {labels}"
+    out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
+    assert out.count('resource "aws_thing"') == 2
+    assert 'id = "a/b"' in out and 'id = "a_b"' in out
 
 
 def test_labels_are_stable_regardless_of_input_order():
     # Same set in a different order must give each finding the same label, so
     # regenerating produces a reviewable diff rather than a reshuffle.
     recipe = _recipe()
-    f1 = _finding(region="us-east-1", account_id="111111111111")
-    f2 = _finding(region="us-west-2", account_id="222222222222")
-    forward = assign_labels([(recipe, f1), (recipe, f2)])
-    reverse = assign_labels([(recipe, f2), (recipe, f1)])
-    assert forward[0] == reverse[1]
-    assert forward[1] == reverse[0]
+    f1 = _finding(region="us-east-1", resource_id="a/b")
+    f2 = _finding(region="us-west-2", resource_id="a_b")
+    forward = {t.finding: t.label for t in group_targets([(recipe, f1), (recipe, f2)])}
+    reverse = {t.finding: t.label for t in group_targets([(recipe, f2), (recipe, f1)])}
+    assert forward == reverse
+    assert len(forward) == 2
 
 
 def test_import_and_resource_labels_agree_after_disambiguation():
@@ -327,8 +353,8 @@ def test_import_and_resource_labels_agree_after_disambiguation():
     # of the two were disambiguated, the plan would create instead of import.
     recipe = _recipe()
     pairs = [
-        (recipe, _finding(region="us-east-1", account_id="111111111111")),
-        (recipe, _finding(region="us-west-2", account_id="222222222222")),
+        (recipe, _finding(region="us-east-1", resource_id="a/b")),
+        (recipe, _finding(region="us-west-2", resource_id="a_b")),
     ]
     out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
     targets = {
@@ -339,6 +365,464 @@ def test_import_and_resource_labels_agree_after_disambiguation():
     declared = {line.split('"')[3] for line in out.splitlines() if line.startswith('resource "')}
     assert targets == declared
     assert len(targets) == 2
+
+
+# ---------------------------------------------------------------------------
+# Merging: one live resource gets one block, however many policies it violates
+#
+# The defect these replace: two recipes on one resource emitted two `import`
+# blocks carrying the same `id`. That file is *valid configuration* -- real
+# `tofu validate` reports "Success!" on it, verified -- so no parser-level gate
+# could catch it, and the conflict surfaced only at plan/apply against live
+# infrastructure. Label disambiguation made the labels unique while leaving both
+# imports pointed at one resource, which hid it rather than fixing it. So these
+# assert on the import ids, never on the labels.
+# ---------------------------------------------------------------------------
+
+
+def _two_policies_on_one_bucket():
+    """Two recipes for ``aws_thing``, agreeing on ``bucket`` and each adding one."""
+    versioning = _recipe(
+        policy_id="versioning",
+        policy_title="Enable versioning",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'), ("versioning", "true")),
+            import_id_template="{resource_id}",
+        ),
+    )
+    encryption = _recipe(
+        policy_id="encryption",
+        policy_title="Enable encryption",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'), ("encrypted", "true")),
+            import_id_template="{resource_id}",
+        ),
+    )
+    return versioning, encryption
+
+
+def test_two_policies_on_one_resource_produce_one_import_block():
+    a, b = _two_policies_on_one_bucket()
+    finding = _finding(resource_id="shared-bucket")
+    out = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+
+    assert out.count("import {") == 1, (
+        "two import blocks for one resource: valid HCL that `tofu validate` accepts "
+        "and that fails only at plan/apply"
+    )
+    assert out.count('resource "aws_thing"') == 1
+    assert out.count('id = "shared-bucket"') == 1
+    # Both remediations survived the merge -- one block, not one policy dropped.
+    # Whitespace-normalized: `tofu fmt` alignment pads to the widest name in the
+    # block, so an exact-spacing assertion would fail on an unrelated added
+    # attribute rather than on a dropped remediation.
+    body = " ".join(out.split())
+    assert "versioning = true" in body
+    assert "encrypted = true" in body
+
+
+def test_the_merged_block_names_every_policy_it_applies():
+    # A block that changes two things must say so where it is read. Otherwise a
+    # reviewer approves one policy and applies another.
+    a, b = _two_policies_on_one_bucket()
+    finding = _finding(resource_id="shared-bucket")
+    out = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+    assert "versioning" in out and "encryption" in out
+    assert "2 POLICIES on this one resource" in out
+    assert "Enable versioning" in out and "Enable encryption" in out
+
+
+def test_a_shared_attribute_is_emitted_once_not_twice():
+    # Both recipes set `bucket`. Emitting it twice is a duplicate argument, which
+    # HCL *does* reject -- so this is the half of the defect a parser would catch.
+    a, b = _two_policies_on_one_bucket()
+    finding = _finding(resource_id="shared-bucket")
+    out = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+    assert " ".join(out.split()).count('bucket = "shared-bucket"') == 1
+
+
+def test_recipes_that_disagree_about_a_value_refuse_to_render():
+    """Picking a winner would silently drop a remediation the user asked for."""
+    a = _recipe(
+        policy_id="wants-true",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("setting", "true"),),
+            import_id_template="{resource_id}",
+        ),
+    )
+    b = _recipe(
+        policy_id="wants-false",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("setting", "false"),),
+            import_id_template="{resource_id}",
+        ),
+    )
+    finding = _finding()
+    with pytest.raises(HclMergeConflict) as exc:
+        render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+    message = str(exc.value)
+    # The message has to name both policies and both values, or the reader cannot
+    # tell which recipe to change.
+    assert "wants-true" in message and "wants-false" in message
+    assert "setting" in message
+    assert "'true'" in message and "'false'" in message
+
+
+def test_a_real_value_supersedes_another_recipes_TODO_placeholder():
+    """The concrete win of merging, not just a tidier file.
+
+    One recipe cannot derive an attribute and stubs it; another sets it for real.
+    Merged, the block needs less human completion than either recipe alone -- and
+    the TODO must be gone, because a leftover placeholder next to a real value is
+    the case that reconfigures a resource with ``"TODO"``.
+    """
+    stubbed = _recipe(
+        policy_id="stubs-it",
+        policy_title="Stubs it",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            unresolvable_required_attributes=(("engine", '"TODO"', "TODO: set the real engine"),),
+        ),
+    )
+    knows = _recipe(
+        policy_id="knows-it",
+        policy_title="Knows it",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'), ("engine", '"postgres"')),
+            import_id_template="{resource_id}",
+        ),
+    )
+    finding = _finding()
+    targets = group_targets([(stubbed, finding), (knows, finding)])
+    assert len(targets) == 1
+    assert targets[0].is_complete, "the stub was filled in, so nothing is left to complete"
+    assert targets[0].unresolvable_names == ()
+
+    out = render_hcl([(stubbed, finding), (knows, finding)], version=VERSION, generated_at=STAMP)
+    assert '"postgres"' in out
+    assert "TODO" not in out, "a leftover TODO beside a real value is what applies `TODO`"
+
+
+def test_merging_is_keyed_on_the_rendered_import_id_not_the_template():
+    """``import_id_template`` is a template, so two resources share one template.
+
+    ``aws_cloudtrail`` renders
+    ``arn:aws:cloudtrail:{region}:{account_id}:trail/{resource_id}``. Keying the
+    merge on the template would collapse every trail in the file into one block --
+    a far worse defect than the one merging fixes, and one that would look like it
+    worked.
+    """
+    recipe = _recipe(
+        hcl=HclTarget(
+            resource_type="aws_cloudtrail",
+            attributes=(("name", '"{resource_id}"'),),
+            import_id_template="arn:aws:cloudtrail:{region}:{account_id}:trail/{resource_id}",
+        )
+    )
+    pairs = [(recipe, _finding(resource_id="trail-a")), (recipe, _finding(resource_id="trail-b"))]
+    out = render_hcl(pairs, version=VERSION, generated_at=STAMP)
+    assert out.count("import {") == 2
+    assert "trail/trail-a" in out and "trail/trail-b" in out
+
+
+def test_two_accounts_sharing_a_resource_name_refuse_to_render():
+    """The worst outcome this tool could produce, now refused rather than emitted.
+
+    `{resource_id}`-style import ids carry no account, so `GameScores` in two
+    accounts renders two `import` blocks with the *same* id. Whichever account the
+    provider authenticates to, one of them adopts and reconfigures the same-named
+    resource in the wrong account. `tofu validate` accepts the file.
+
+    A correct caller never reaches this, because `plan_units` splits by account
+    first -- which is why this went unnoticed. But that split is the only thing
+    preventing it, and the generator cannot verify that another module was careful,
+    so it asserts the property itself.
+    """
+    recipe = _recipe()
+    pairs = [
+        (recipe, _finding(account_id="111111111111")),
+        (recipe, _finding(account_id="222222222222")),
+    ]
+    with pytest.raises(AmbiguousImportError) as exc:
+        render_hcl(pairs, version=VERSION, generated_at=STAMP)
+    message = str(exc.value)
+    assert "111111111111" in message and "222222222222" in message
+    # Both scopes named, and the consequence stated. The *noun* is asserted
+    # separately below, per cloud: this call passes no unit, so it gets the neutral
+    # default, and asserting "account" here would have pinned the message to one
+    # cloud's vocabulary in a test about the refusal.
+    assert "would be imported twice" in message
+    assert "wrong credential scope" in message
+
+
+@pytest.mark.parametrize(
+    ("scope_noun", "wrong_noun"),
+    [("account", "subscription"), ("subscription", "account")],
+)
+def test_the_clash_message_uses_the_cloud_s_own_word_for_the_scope(scope_noun, wrong_noun):
+    """The exit-6 message an operator reads must name a thing in their estate.
+
+    This message tells someone what to do about a refusal, and it hardcoded
+    "account": an Azure user was told that "one provider configuration covers one
+    account" and to "split the findings by account". Neither names anything they
+    have, so the one instruction the tool gives them is unfollowable.
+
+    Both directions are asserted -- the right noun present *and* the other cloud's
+    noun absent -- because a message that appended the correct word while leaving the
+    wrong one in place would satisfy a presence-only check.
+    """
+    recipe = _recipe()
+    pairs = [
+        (recipe, _finding(account_id="111111111111")),
+        (recipe, _finding(account_id="222222222222")),
+    ]
+    with pytest.raises(AmbiguousImportError) as exc:
+        group_targets(pairs, scope_noun=scope_noun)
+    message = str(exc.value)
+    assert f"wrong {scope_noun}" in message
+    assert wrong_noun not in message, (
+        f"the message still names {wrong_noun!r} while claiming to describe a {scope_noun}"
+    )
+
+
+def test_two_regions_sharing_a_resource_name_also_refuse_to_render():
+    # Same defect, one account. Reachable only for a provider that is not
+    # region-scoped, where `plan_units` does not split by region.
+    recipe = _recipe()
+    pairs = [
+        (recipe, _finding(region="us-east-1")),
+        (recipe, _finding(region="us-west-2")),
+    ]
+    with pytest.raises(AmbiguousImportError, match="us-east-1"):
+        render_hcl(pairs, version=VERSION, generated_at=STAMP)
+
+
+def test_the_layout_split_keeps_a_real_run_clear_of_that_refusal():
+    """The refusal must not be reachable through the normal path.
+
+    An assertion that fires on ordinary input is a broken tool rather than a guard,
+    so this renders the same cross-account findings the way the CLI does -- planned
+    into units first -- and requires every unit to render.
+    """
+    recipe = _recipe()
+    pairs = [
+        (recipe, _finding(account_id="111111111111")),
+        (recipe, _finding(account_id="222222222222")),
+        (recipe, _finding(account_id="111111111111", region="us-west-2")),
+    ]
+    units = plan_units(pairs, Format.HCL, cloud="aws")
+    assert len(units) == 3, "the split is what makes each file unambiguous"
+    for unit in units:
+        out = render_hcl(list(unit.pairs), version=VERSION, generated_at=STAMP, unit=unit)
+        assert out.count("import {") == 1
+
+
+def test_duplicate_pairs_collapse_to_one_block():
+    # The CLI dedupes findings, so this is a generator-level backstop. Previously
+    # these got three distinct labels and three import blocks with one id.
+    recipe = _recipe()
+    finding = _finding()
+    targets = group_targets([(recipe, finding)] * 3)
+    assert len(targets) == 1
+    assert targets[0].recipes == (recipe,) * 3
+
+
+def test_a_merged_block_is_filed_under_the_riskiest_tier_it_carries():
+    """The banner is a gate, so it must describe the whole block.
+
+    A merged block is applied as a unit. Filing it under SAFEST because one of its
+    two policies is safe would put an irreversible change under the banner that
+    says reversible -- and `--safety-level` is what a user reads to decide.
+    """
+    safe, _ = _two_policies_on_one_bucket()
+    risky = _recipe(
+        policy_id="risky",
+        policy_title="Risky one",
+        reversible=False,
+        reverse_hint="",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'), ("risky", "true")),
+            import_id_template="{resource_id}",
+        ),
+    )
+    finding = _finding()
+    targets = group_targets([(safe, finding), (risky, finding)])
+    assert len(targets) == 1
+    assert targets[0].safety_tier is SafetyTier.CAUTION
+
+    out = render_hcl([(safe, finding), (risky, finding)], version=VERSION, generated_at=STAMP)
+    assert "Safety tier: CAUTION" in out
+    assert "Safety tier: SAFEST" not in out, (
+        "the merged block appeared under SAFEST, which is the banner a user trusts"
+    )
+    # And the irreversibility warning travels with it.
+    assert "NOT REVERSIBLE" in out
+
+
+def test_each_note_on_a_merged_block_says_which_policy_it_came_from():
+    """Two reversal commands in one block are ambiguous unless each is attributed.
+
+    A merged block emits the union of its contributors' safety notes, so two recipes
+    produce two `Reversible: <command>` lines with *different* commands. Unattributed,
+    a reader undoing the block takes either one as "the" reversal and leaves the other
+    policy's change in place -- believing they had reverted it. The policy title on
+    each line is what makes the pair readable as two things to undo.
+    """
+    a, b = _two_policies_on_one_bucket()
+    a = replace(a, reverse_hint="turn versioning off")
+    b = replace(b, reverse_hint="turn encryption off")
+    finding = _finding(resource_id="shared-bucket")
+    out = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+
+    body = " ".join(out.split())
+    for recipe, hint in ((a, "turn versioning off"), (b, "turn encryption off")):
+        assert f"[{recipe.policy_title}] Reversible: {hint}" in body, (
+            f"the reversal for {recipe.policy_title!r} is not attributed to it; a "
+            f"reader cannot tell which of the two commands undoes which change:\n{out}"
+        )
+
+
+def test_a_merged_block_requires_the_highest_provider_version_of_its_parts():
+    # Understating the requirement produces a file that fails `init` against the
+    # version the header told the reader to use.
+    # 5.9 and 5.12 specifically: 5.12 is the higher version, but "5.12" sorts
+    # *below* "5.9" as a string, so a lexicographic comparison picks 5.9 and
+    # understates the requirement. A 5.0/5.12 pair would not catch that, because
+    # string and numeric order agree there.
+    low = _recipe(
+        policy_id="low",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("a", "true"),),
+            import_id_template="{resource_id}",
+            min_provider_version="5.9",
+        ),
+    )
+    high = _recipe(
+        policy_id="high",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("b", "true"),),
+            import_id_template="{resource_id}",
+            min_provider_version="5.12",
+        ),
+    )
+    finding = _finding()
+    # Both input orders, even though group_targets sorts internally: the assertion
+    # is about the comparison, and a future change to that sort must not quietly
+    # turn this into a one-order test.
+    for pairs in ([(low, finding), (high, finding)], [(high, finding), (low, finding)]):
+        assert group_targets(pairs)[0].min_provider_version == "5.12"
+
+
+def test_merged_nested_blocks_are_combined_rather_than_repeated():
+    a = _recipe(
+        policy_id="a",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            blocks=(("config", (("first", '"1"', ""),)),),
+        ),
+    )
+    b = _recipe(
+        policy_id="b",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            blocks=(("config", (("second", '"2"', ""),)),),
+        ),
+    )
+    finding = _finding()
+    out = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+    assert out.count("config {") == 1, "a repeated block is a different resource shape"
+    assert '"1"' in out and '"2"' in out
+
+
+def test_nested_blocks_that_disagree_also_refuse_to_render():
+    a = _recipe(
+        policy_id="a",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            blocks=(("config", (("status", '"Enabled"', ""),)),),
+        ),
+    )
+    b = _recipe(
+        policy_id="b",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("bucket", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+            blocks=(("config", (("status", '"Suspended"', ""),)),),
+        ),
+    )
+    finding = _finding()
+    with pytest.raises(HclMergeConflict, match="config.status"):
+        render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+
+
+def test_merged_output_is_independent_of_input_order():
+    a, b = _two_policies_on_one_bucket()
+    finding = _finding()
+    forward = render_hcl([(a, finding), (b, finding)], version=VERSION, generated_at=STAMP)
+    reverse = render_hcl([(b, finding), (a, finding)], version=VERSION, generated_at=STAMP)
+    assert forward == reverse, "regenerating would produce a reshuffle instead of a diff"
+
+
+def test_no_import_id_is_ever_claimed_twice_in_any_generated_file():
+    """The invariant, asserted end-to-end over a run that mixes every case at once.
+
+    Two accounts, two resources each, two policies merging on one resource type plus
+    a third on another -- planned into units exactly as the CLI does, then every unit
+    checked. Stated as a property over the emitted ``import`` ids rather than as a
+    block count, because that is what was actually wrong: an id appearing twice for
+    one resource type is the defect, whatever the labels look like.
+    """
+    a, b = _two_policies_on_one_bucket()
+    other = _recipe(
+        policy_id="other",
+        policy_title="Other thing",
+        hcl=HclTarget(
+            resource_type="aws_other",
+            attributes=(("name", '"{resource_id}"'),),
+            import_id_template="{resource_id}",
+        ),
+    )
+    pairs = []
+    for account in ("111111111111", "222222222222"):
+        for resource in ("one", "two"):
+            finding = _finding(resource_id=resource, account_id=account)
+            pairs.extend([(a, finding), (b, finding), (other, finding)])
+
+    units = plan_units(pairs, Format.HCL, cloud="aws")
+    seen: set[tuple[str, str, str]] = set()
+    for unit in units:
+        out = render_hcl(list(unit.pairs), version=VERSION, generated_at=STAMP, unit=unit)
+        rtype = None
+        for line in out.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("to = "):
+                rtype = stripped.removeprefix("to = ").split(".")[0]
+            elif stripped.startswith("id = ") and rtype is not None:
+                # Scoped by file: the same id in two files is correct, because each
+                # file is applied with its own account's credentials.
+                key = (unit.relative_path, rtype, stripped)
+                assert key not in seen, f"{key} is claimed by two import blocks"
+                seen.add(key)
+                rtype = None
+    # 2 accounts x 2 resources x (one merged aws_thing + one aws_other).
+    assert len(seen) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +848,6 @@ def test_curated_recipes_declare_a_docs_url(recipe):
 @pytest.mark.parametrize("recipe", all_recipes(), ids=lambda r: r.policy_id)
 def test_curated_recipes_are_not_disruptive_in_v1(recipe):
     # v1 promises no availability-affecting remediations. This is the guard.
-    from remgen.core.model import SafetyTier
-
     assert recipe.safety_tier is not SafetyTier.DISRUPTIVE
     assert recipe.effort is Effort.LOW
     assert not recipe.data_path_impact
