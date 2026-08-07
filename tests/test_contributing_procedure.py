@@ -37,6 +37,34 @@ TESTS = pathlib.Path(__file__).parent
 DOCS = (CONTRIBUTING, README, ROADMAP)
 
 
+def _implemented_providers() -> list:
+    """Every provider descriptor that reaches at least one recipe.
+
+    Discovered rather than listed, matching the `claims` job: a hardcoded pair would
+    have to be edited by the commit that adds a cloud, and that is the edit that gets
+    forgotten. It was forgotten once already -- the register gate stayed AWS-only while
+    Azure shipped four recipes -- so these tests derive the set the same way.
+    """
+    import importlib
+    import pkgutil
+
+    import remgen.providers
+    from remgen.core.provider import Provider
+
+    found = []
+    for _finder, name, ispkg in pkgutil.iter_modules(remgen.providers.__path__):
+        if not ispkg:
+            continue
+        module = importlib.import_module(f"remgen.providers.{name}")
+        for value in vars(module).values():
+            if isinstance(value, Provider) and value.all_recipes():
+                found.append(value)
+    return sorted(found, key=lambda p: p.cloud)
+
+
+IMPLEMENTED = _implemented_providers()
+
+
 def _test_functions_defined() -> set[str]:
     """Every test function name defined anywhere in the suite."""
     names: set[str] = set()
@@ -175,6 +203,188 @@ def test_contributing_points_recipe_authors_at_the_triage_register() -> None:
     )
 
 
+@pytest.mark.parametrize("provider", IMPLEMENTED, ids=lambda p: p.cloud)
+def test_every_implemented_cloud_has_a_triage_register(provider) -> None:
+    """A cloud that ships recipes must have a register on disk.
+
+    This is the same claim the `claims` job makes, deliberately duplicated as a *test*.
+    The job is the enforcement a contributor meets; this is the one that goes red in a
+    local run and in a fresh clone, and unlike the job it cannot be skipped by pushing
+    to a branch whose workflow was edited.
+
+    The failure it exists for already happened: the register gate was written against
+    `AWS_POLICY_TRIAGE.md` by name, so it reported success for a repo in which Azure
+    shipped four recipes and had no register at all.
+    """
+    doc = REPO / f"{provider.cloud.upper()}_POLICY_TRIAGE.md"
+    assert doc.exists(), (
+        f"{provider.display_name} ships {len(provider.all_recipes())} recipes but "
+        f"{doc.name} does not exist. ROADMAP.md sends readers to a register for the "
+        f"answer to 'why does this policy have no recipe', and CONTRIBUTING.md tells a "
+        f"recipe author to start there; a cloud without one has neither."
+    )
+
+
+@pytest.mark.parametrize("provider", IMPLEMENTED, ids=lambda p: p.cloud)
+def test_each_triage_register_shipped_table_matches_its_recipes(provider) -> None:
+    """The register's Shipped table must equal that cloud's recipes, both directions.
+
+    Also duplicated from the `claims` job, and for a sharper reason than the check
+    above: this is the claim that goes stale on the ordinary course of work. Landing a
+    batch without moving its rows leaves the register asserting that shipped work is
+    outstanding, and the reverse leaves it claiming a recipe that does not exist. The
+    suite is where a contributor sees that before pushing.
+
+    Only the Shipped table is checked here -- the internal-consistency checks (partition,
+    summary counts, headings) stay in CI, because they are about a document's structure
+    rather than about agreement with code, and this file's subject is the second.
+    """
+    doc = REPO / f"{provider.cloud.upper()}_POLICY_TRIAGE.md"
+    text = doc.read_text(encoding="utf-8")
+    heading = "\n## Shipped\n"
+    assert text.count(heading) == 1, (
+        f"{doc.name} must have exactly one '## Shipped' heading; the shipped rows "
+        f"cannot be located without it"
+    )
+    body = text[text.index(heading) :].split("\n## ", 2)[1]
+    in_doc = set(
+        re.findall(
+            r"^\| `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` \|",
+            body,
+            re.MULTILINE,
+        )
+    )
+    in_code = {r.policy_id for r in provider.all_recipes()}
+    assert in_doc, f"{doc.name} lists no shipped policies at all; this check would pass vacuously"
+    assert in_doc == in_code, (
+        f"{doc.name}'s Shipped table and {provider.display_name}'s recipes disagree. "
+        f"Shipped but no recipe: {sorted(in_doc - in_code)}. Has a recipe but not "
+        f"listed as shipped: {sorted(in_code - in_doc)}. Move the row in the same "
+        f"commit as the recipe."
+    )
+
+
+def test_every_markdown_anchor_link_resolves_to_a_real_heading() -> None:
+    """A `](#...)` link must name a heading that exists in the target document.
+
+    Written because the registers link *into each other's rejection classes* and those
+    anchors embed the class size -- `#r10-not-addressable-by-resource-id-24`. That is a
+    useful link and a rotting one: moving a single policy out of R10 renames the heading
+    to `-23` and the link lands at the top of the file instead, silently. The reader gets
+    a document rather than the argument they were sent to read, and nothing goes red.
+
+    The `docs-refs` CI job checks that referenced *files* exist; it cannot see fragments.
+    Anchors are slugged the way GitHub does it -- lowercased, punctuation dropped, spaces
+    to hyphens -- which is close enough to catch a renamed or resized heading, the failure
+    this exists for.
+    """
+    registers = sorted(REPO.glob("*_POLICY_TRIAGE.md"))
+    assert registers, "no triage registers found; this check would pass vacuously"
+    docs = [*DOCS, *registers]
+
+    def slug(heading: str) -> str:
+        s = re.sub(r"[^\w\s-]", "", heading.lower())
+        return re.sub(r"\s+", "-", s.strip())
+
+    headings = {
+        doc.name: {slug(m) for m in re.findall(r"^#+ (.+)$", doc.read_text(encoding="utf-8"), re.M)}
+        for doc in docs
+    }
+    broken, checked = [], 0
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8")
+        # Same-document links, then links naming another file plus a fragment.
+        for anchor in re.findall(r"\]\(#([\w-]+)\)", text):
+            checked += 1
+            if anchor not in headings[doc.name]:
+                broken.append(f"{doc.name} -> #{anchor}")
+        for target, anchor in re.findall(r"\]\(\.?/?([\w.]+\.md)#([\w-]+)\)", text):
+            checked += 1
+            if target not in headings:
+                broken.append(f"{doc.name} -> {target}#{anchor} (target not checked here)")
+            elif anchor not in headings[target]:
+                broken.append(f"{doc.name} -> {target}#{anchor}")
+    assert checked, "no anchor links found at all; this check would pass vacuously"
+    assert not broken, (
+        f"link(s) point at a heading that does not exist: {broken}. A rejection-class "
+        f"anchor embeds the class size, so moving one policy renames the heading and the "
+        f"link silently lands at the top of the file -- the reader gets a document "
+        f"instead of the argument they were sent to read."
+    )
+
+
+def test_contributing_gives_azure_authors_the_ids_check_before_they_write() -> None:
+    """The Azure procedure must front-load the `--ids` check, not bury it.
+
+    `Recipe` requires `{resource_id}` in `cli_template`, and an ARM id reaches a command
+    only through `--ids`. A command without it means the recipe cannot be *expressed* --
+    a different and more expensive failure than one that cannot be verified, because it
+    is discovered after the work is done. That is not hypothetical either: it is why the
+    planned Key Vault RBAC recipe does not exist, and `AZURE_POLICY_TRIAGE.md` rejects
+    24 policies for it.
+
+    Checked against the Azure section specifically. A contributor writing an Azure
+    recipe reads that section; a sentence about `--ids` somewhere in the AWS half does
+    them no good.
+    """
+    text = CONTRIBUTING.read_text(encoding="utf-8")
+    assert "## Adding an Azure recipe" in text, (
+        "CONTRIBUTING.md must have an 'Adding an Azure recipe' section: Azure's sources "
+        "and constraints differ on all three verification axes"
+    )
+    body = text.split("## Adding an Azure recipe", 1)[1].split("\n## ", 1)[0]
+    assert "AZURE_POLICY_TRIAGE.md" in body, (
+        "the Azure section must name AZURE_POLICY_TRIAGE.md: an Azure author needs the "
+        "Azure register, and pointing them at the AWS one is pointing them at policies "
+        "they cannot write"
+    )
+    assert "--ids" in body, (
+        "the Azure section must tell an author to check `--ids` support. It is the one "
+        "constraint that decides whether a recipe can exist at all, and it is Azure's "
+        "alone -- there is no AWS analogue for a contributor to have already learned."
+    )
+    ids_position = body.index("--ids")
+    assert ids_position < len(body) // 2, (
+        "the `--ids` check must appear in the first half of the Azure section. It is "
+        "step one of writing an Azure recipe -- an author who meets it last has already "
+        "verified the API and HCL axes for a command that cannot be used."
+    )
+
+
+def test_roadmap_names_a_register_for_every_implemented_cloud() -> None:
+    """ROADMAP.md's Coverage section is where "why no recipe" is answered.
+
+    It answered it for AWS only while Azure shipped recipes, which left an Azure reader
+    with a link to a document that does not mention their cloud. Parametrized over the
+    discovered providers so adding a third cloud fails here too.
+    """
+    text = ROADMAP.read_text(encoding="utf-8")
+    missing = [
+        f"{p.cloud.upper()}_POLICY_TRIAGE.md"
+        for p in IMPLEMENTED
+        if f"{p.cloud.upper()}_POLICY_TRIAGE.md" not in text
+    ]
+    assert not missing, (
+        f"ROADMAP.md does not name {missing}. Its Coverage section is cited as the "
+        f"answer to 'why does this policy have no recipe'; a cloud whose register is "
+        f"not linked there has no answer a reader can reach."
+    )
+
+
+def test_the_implemented_provider_set_is_not_empty() -> None:
+    """Anti-vacuity guard for the four parametrized checks above.
+
+    All of them iterate `IMPLEMENTED`. If discovery breaks -- a renamed `providers`
+    package, a descriptor that stops reaching recipes -- they pass by iterating nothing,
+    which is the failure mode that makes a green suite mean less than no suite.
+    """
+    assert len(IMPLEMENTED) >= 2, (
+        f"discovered only {[p.cloud for p in IMPLEMENTED]} as implemented providers. "
+        f"Two clouds ship recipes today; if that genuinely changed, the parametrized "
+        f"register checks in this file now cover less than they appear to."
+    )
+
+
 @pytest.mark.parametrize(
     ("subcommand", "flag"),
     [
@@ -202,4 +412,72 @@ def test_flags_the_docs_tell_contributors_to_run_exist(
     assert flag in capsys.readouterr().out, (
         f"the docs tell contributors to run `awsremgen {subcommand} {flag}`, but that "
         f"flag is not in `awsremgen {subcommand} --help`"
+    )
+
+
+# Every flag `CONTRIBUTING.md` puts in an `azremgen` block. Kept as a separate list from
+# the AWS one rather than a shared parametrization, because the two commands legitimately
+# differ: the Azure sample is generated *without* `--safety-level`, and the doc explains
+# why. Merging them would either assert a flag Azure's block does not use or drop the
+# Azure block from coverage entirely -- and the second is the one that passes quietly.
+@pytest.mark.parametrize(
+    ("subcommand", "flag"),
+    [
+        ("generate", "--findings"),
+        ("generate", "--out"),
+        ("generate", "--safety-level"),
+        ("verify", "--provider-schema"),
+        ("policies", "--unsupported"),
+    ],
+)
+def test_azure_flags_the_docs_tell_contributors_to_run_exist(
+    subcommand: str, flag: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same check for `azremgen`, because the docs give it its own command blocks.
+
+    The AWS version of this test proved nothing about Azure: the two CLIs are built from
+    separate provider descriptors and could diverge on any flag. `--safety-level` is
+    asserted here even though the documented Azure sample command omits it, since
+    `CONTRIBUTING.md` says the first `caution` Azure recipe changes that command -- so a
+    contributor will reach for it, and it must exist when they do.
+    """
+    from remgen.providers.azure.cli import main
+
+    monkeypatch.setattr("sys.argv", ["azremgen", subcommand, "--help"])
+    with pytest.raises(SystemExit):
+        main()
+    assert flag in capsys.readouterr().out, (
+        f"the docs tell contributors to run `azremgen {subcommand} {flag}`, but that "
+        f"flag is not in `azremgen {subcommand} --help`"
+    )
+
+
+def test_documented_azure_verify_behaviour_without_a_schema_matches_the_docs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The flagless-`verify` promise, measured on `azremgen` too.
+
+    `CONTRIBUTING.md`'s Azure section says "everything above applies", which includes the
+    exit-0-with-`not checked` behaviour and the instruction to read `Schema source:` as
+    the evidence the HCL axis ran. That sentence makes a claim about a second binary, and
+    the defect this whole file exists for was a `verify` claim nobody ran. Running one
+    CLI and inferring the other would repeat the mistake in a smaller form.
+    """
+    from remgen.providers.azure.cli import main
+
+    monkeypatch.delenv("REMGEN_TF_SCHEMA", raising=False)
+    monkeypatch.setattr("sys.argv", ["azremgen", "verify"])
+    code = main()
+    out = capsys.readouterr().out
+    hcl = out.split("HCL: checking", 1)[1]
+
+    assert code == 0, (
+        "a bare `azremgen verify` must be exit-code-neutral like the AWS one; "
+        "CONTRIBUTING.md's Azure section says 'everything above applies', and that "
+        "sentence covers this behaviour"
+    )
+    assert "not checked" in hcl, "the unchecked axis must say so, since the exit code will not"
+    assert "Schema source:" not in hcl, (
+        "the docs tell a contributor to look for `Schema source:` as the evidence the "
+        "HCL half ran; it must be absent when it did not"
     )

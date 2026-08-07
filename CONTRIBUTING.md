@@ -58,27 +58,32 @@ per-recipe test parametrizes over a set that excludes it, and nothing anywhere g
 `test_every_service_module_on_disk_is_actually_discovered` walks the directory and asserts the
 aggregate contains every module's entries, so that failure mode cannot come back.
 
-**Start by picking a policy from [AWS_POLICY_TRIAGE.md](./AWS_POLICY_TRIAGE.md).** It assigns every
-AWS-only policy in the catalogue to one of four buckets, and the *Write a recipe now* section is the
-prioritised, service-batched list of what is ready to be written — with the UUID you need in the same
-row. Two things follow from that, both enforced:
+**Start by picking a policy from your cloud's triage register** — [AWS_POLICY_TRIAGE.md](./AWS_POLICY_TRIAGE.md)
+or [AZURE_POLICY_TRIAGE.md](./AZURE_POLICY_TRIAGE.md). Each assigns every one of that cloud's policies
+to one of four buckets, and the *Write a recipe now* section is the prioritised, service-batched list of
+what is ready to be written — with the UUID you need in the same row. Three things follow from that,
+all enforced:
 
 - **Moving the row is part of your commit.** When your recipe lands, its row moves out of *Write a
   recipe now* into *Shipped*, and the counts in the *Result* table change with it. A `claims` gate
   compares that table against the recipes reachable from the provider descriptor, in both directions,
   so leaving the row behind fails the build rather than leaving the register quietly claiming your
   work is outstanding.
-- **If you want to write one the register rejects, argue the class, not the policy.** The eight
-  rejection classes are the unit: a policy is rejected because it is an instance of one. Overturning
-  one means editing that class's reasoning and moving every member it no longer covers — which is the
-  point, since `ROADMAP.md` cites those classes as the answer to "why does this policy have no
-  recipe". The same gate fails if a rejected policy gains a recipe without its row moving.
+- **If you want to write one the register rejects, argue the class, not the policy.** The rejection
+  classes are the unit: a policy is rejected because it is an instance of one. Overturning one means
+  editing that class's reasoning and moving every member it no longer covers — which is the point,
+  since `ROADMAP.md` cites those classes as the answer to "why does this policy have no recipe". The
+  same gate fails if a rejected policy gains a recipe without its row moving.
+- **A new cloud needs its own register before it can ship a recipe.** The gate discovers providers
+  rather than reading a list of documents, and a cloud whose descriptor reaches any recipe must have
+  `<CLOUD>_POLICY_TRIAGE.md`. That is deliberate: the gate was AWS-only when Azure shipped its first
+  four recipes, and it went on reporting success while a whole cloud had no register at all.
 
 Every field must be verified against a primary source, not inferred from a similar recipe:
 
-1. **Policy UUID** from `AWS_POLICY_TRIAGE.md`, or from the live Tenable Cloud Security catalog for a
-   policy the register does not cover (it triages AWS-only policies; `Custom`, admission-controller
-   and uncategorised ones are outside it). Not invented, not guessed.
+1. **Policy UUID** from your cloud's triage register, or from the live Tenable Cloud Security catalog
+   for a policy no register covers (each triages that cloud's *only* policies; `Custom`,
+   admission-controller and uncategorised ones are outside both). Not invented, not guessed.
 2. **API call and parameters** confirmed against the AWS service model (`service-2.json`) —
    the same source `awsremgen verify` reads. Confirm the operation name and every parameter's shape.
 3. **HCL resource type and attribute** confirmed against the provider **schema**
@@ -182,6 +187,17 @@ rather than `ac.index`, and the HCL axis reads an `azurerm` schema. Modules go u
 `src/remgen/providers/azure/recipes/`, named for the **SDK package** rather than the `az` command
 group — the two differ (`az postgres` is `azure.mgmt.rdbms`), and the SDK name wins because that is
 what `drift.py` resolves.
+
+**Pick from [AZURE_POLICY_TRIAGE.md](./AZURE_POLICY_TRIAGE.md)**, whose *Write a recipe now* section is
+batched by SDK package for exactly that reason — the batch is one module, one command group, one
+`azurerm` resource-type family, so the second recipe in a batch costs a fraction of the first. The batch
+order in that table is a recommendation, not a rule; taking a whole batch is what makes the estimate
+hold. Every batch member was probed for `--ids` support before being listed, so a policy in that table
+has already cleared item 1 below. A policy in
+[`R10-not-addressable-by-resource-id`](./AZURE_POLICY_TRIAGE.md#r10-not-addressable-by-resource-id-24)
+has already *failed* it — do not spend an afternoon rediscovering that, and if you believe a member is
+mis-assigned, say which command and which flag, because two assignments in that class were wrong and
+both were found that way.
 
 Five findings from the first four recipes will save you a rewrite. The first four are recorded in
 `src/remgen/providers/azure/recipes/__init__.py`, next to where the dropped recipes would have gone;

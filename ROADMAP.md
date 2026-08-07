@@ -68,12 +68,20 @@ each one brings its own irreversible operations under the same flag.
 - **Explicitly excluded, and why:** VPC flow logs is a single API call but bills on ingested volume
   with no ceiling. It stays out of the default set regardless of how easy it is to script. Ease of
   scripting is not a safety argument.
-- **Which policies, specifically:** [AWS_POLICY_TRIAGE.md](AWS_POLICY_TRIAGE.md) assigns every
-  AWS-only policy in the catalogue to one of four buckets — shipped, write-a-recipe-now, blocked on a
-  named prerequisite, or documented rejection — with the eight rejection classes and a prioritised,
-  service-batched recipe list. The VPC flow logs exclusion above is one member of one of those
-  classes; the register generalises it. It also records what it does *not* cover: the `Custom`,
-  `KubernetesAdmissionController` and uncategorised policies, which no pass has triaged.
+- **Which policies, specifically:** there is one register per implemented cloud —
+  [AWS_POLICY_TRIAGE.md](AWS_POLICY_TRIAGE.md) (237 AWS-only policies) and
+  [AZURE_POLICY_TRIAGE.md](AZURE_POLICY_TRIAGE.md) (217 Azure-only) — each assigning every policy to
+  one of four buckets: shipped, write-a-recipe-now, blocked on a named prerequisite, or documented
+  rejection. Each carries its rejection classes and a prioritised, service-batched recipe list. The
+  VPC flow logs exclusion above is one member of one AWS class; the register generalises it. Both also
+  record what they do *not* cover: the `Custom`, `KubernetesAdmissionController` and uncategorised
+  policies, which no pass has triaged.
+- **The design ceiling, per cloud, is the number worth quoting** rather than a coverage percentage:
+  61 of 237 for AWS (26%), 81 of 217 for Azure (37%). The rest cannot be expressed as one idempotent,
+  reversible, per-resource API call, and the registers say why by class rather than by policy. Azure's
+  ceiling is higher because `az <service> update --ids` is a more uniform surface than AWS's
+  per-service APIs — and Azure has one rejection class AWS does not, for the commands where that
+  uniformity fails.
 - **Recipes are split one module per AWS service** (`recipes/dynamodb.py`, `recipes/rds.py`, ...),
   because the service is the unit the *verification* is done in: one API model, one CLI command group,
   one set of provider resource types. A single growing file made a new recipe's diff span everything,

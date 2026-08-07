@@ -6,7 +6,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **`AZURE_POLICY_TRIAGE.md` — every Azure-only policy in the catalogue, assigned to exactly one of
+  four buckets.** 217 policies: shipped (4), write-a-recipe-now (42), blocked on a named prerequisite
+  (35), documented rejection (136). The headline is the **design ceiling: 81 of 217, or 37%** — the
+  share of the Azure catalogue that can be expressed as a single idempotent, reversible, per-resource
+  API call. That is meaningfully higher than AWS's 26%, because `az <service> update --ids` is a more
+  uniform surface than AWS's per-service APIs.
+
+  Deliberately the same shape as `AWS_POLICY_TRIAGE.md`, keeping the AWS class numbers where the
+  argument is the same one, so a reader is not learning a second vocabulary and a class that turns out
+  to be wrong is wrong in both places at once. The 42 actionable recipes are batched by
+  **`azure.mgmt` SDK package** rather than by `az` command group — `az postgres` and `az mysql` are
+  both `azure.mgmt.rdbms`, and the SDK name is what `drift.py` resolves. Seven batches, 50–67 h.
+
+  One rejection class has no AWS counterpart and is the Azure-specific finding:
+  **`R10-not-addressable-by-resource-id`** (24 policies). `Recipe` requires `cli_template` to name
+  `{resource_id}`, and an ARM id reaches a command only through `--ids`, which is not universal in
+  `az`. `providers/azure/recipes/__init__.py` already recorded this as the reason the planned Key
+  Vault RBAC recipe does not exist; the class generalises that one finding to every policy it covers,
+  with two measured causes — 11 where the update verb has no `--ids`, 13 where the setting is
+  subscription-scoped and there is no per-resource id at all.
+
+  **Two assignments were corrected during the pass and both are recorded rather than quietly fixed.**
+  A class called `R11-extension-required` was invented for the 14 Microsoft Defender policies on the
+  theory that they need an `az` extension; they do not, `az security pricing create` is base CLI. That
+  class had been derived from the policy *name* — the identical error that dissolved
+  `R8-out-of-design-scope` in the AWS register — so it was dissolved into `R10`. Separately, five
+  policies sat in `R10` that accept `--ids`, including `SQL Server Microsoft Defender`, which is
+  per-server threat protection rather than the subscription plan it shares a name with. Moving them
+  raised the ceiling from 35% to 37%. Both were found by reading a class's members instead of trusting
+  its label, which is what the class structure is for.
+
+  Like the AWS register, it names what it does *not* cover: 40 `Custom` and
+  `KubernetesAdmissionController` policies and 24 uncategorised ones, untriaged by any pass. UDM
+  reports 1063 policies / 388 Azure-tagged; GraphQL reports 739 / 324, and the 64 gap is exactly those
+  two groups.
+- **Seven new tests in `tests/test_contributing_procedure.py`** (12 → 25 including parametrization),
+  extending prose-versus-behaviour coverage to Azure and to the register claims. Every implemented
+  cloud must have a register; each register's Shipped table must equal that cloud's recipes in both
+  directions; the Azure section must name the Azure register and put the `--ids` check in its first
+  half; `ROADMAP.md` must link a register per cloud; `azremgen`'s documented flags must exist and its
+  flagless `verify` must behave as documented. The provider set is **discovered**, and an anti-vacuity
+  guard fails if discovery returns fewer than two clouds. Mutation-tested rather than trusted for
+  passing: ten mutations, each caught by the intended test — including `--ids` guidance moved to the
+  end of the section rather than deleted, which is the realistic version of that regression.
+
+### Changed
+- **The triage-register CI gate is now per-cloud and provider-discovered.** It was written against
+  `AWS_POLICY_TRIAGE.md` and `AWS.all_recipes()` by name, so it reported success for a repository in
+  which Azure shipped four recipes and had no register at all — verified by running the previous gate
+  against the previous tree. It now iterates the discovered `Provider` descriptors and requires
+  `<CLOUD>_POLICY_TRIAGE.md` for any cloud that reaches a recipe, so adding a third cloud fails the
+  build rather than silently skipping it. Same discipline as the `SECURITY.md` scope check, for the
+  same reason: a hardcoded list must be edited by the commit that adds a cloud, and that is exactly
+  the edit that gets forgotten. Measured on seven deliberate failures, including the missing-register
+  case the old gate passed and an AWS case confirming the generalisation did not stop checking AWS.
+- **`CONTRIBUTING.md` and `ROADMAP.md` no longer treat AWS as the only cloud with a register.**
+  "Adding a recipe" points at the reader's cloud rather than at `AWS_POLICY_TRIAGE.md`, and states
+  that a new cloud needs its own register before it can ship a recipe. The Azure section now points
+  at `AZURE_POLICY_TRIAGE.md`, explains that its batches are SDK-package-shaped, and notes that every
+  listed batch member was already probed for `--ids` while every `R10` member already failed that
+  probe. `ROADMAP.md`'s Coverage section links both registers and quotes both design ceilings.
 
 ## [0.2.1] — 2026-08-07
 
