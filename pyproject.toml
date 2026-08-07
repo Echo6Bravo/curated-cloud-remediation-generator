@@ -48,6 +48,12 @@ dev = [
 # coverage and API verification are all per cloud, so a single command would imply
 # an estate-wide run that no single credential set can perform.
 awsremgen = "remgen.providers.aws.cli:main"
+# Installed before it shipped any recipe, which is what proved the shared pipeline is
+# genuinely cloud-neutral -- an abstraction validated against one provider is a guess,
+# and driving it with a second one found three defects in the shared code. It ships
+# recipes now; coverage stays partial by design and `policies --unsupported` reports
+# the gap.
+azremgen = "remgen.providers.azure.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Echo6Bravo/curated-cloud-remediation-generator"

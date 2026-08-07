@@ -18,6 +18,18 @@ fails ``plan``, those attributes are rendered as explicit ``# TODO`` markers and
 the file is labelled as requiring completion. Output that admits it is incomplete
 is more useful than output that looks finished and is not.
 
+**One resource gets one block, no matter how many policies it violates.** Two
+findings on the same live resource -- an S3 bucket that is both unversioned and
+unencrypted -- would otherwise produce two ``import`` blocks carrying the same
+``id``. That file is *valid configuration*: ``tofu validate`` reports "Success!",
+because nothing at parse time knows the two ids name one resource. The conflict
+surfaces at ``plan``/``apply`` against live infrastructure, which is the worst
+place to find it. So contributing recipes are merged per resource by
+:func:`group_targets`, and a genuine disagreement about what to set raises
+:class:`HclMergeConflict` rather than picking a winner. Label disambiguation alone
+is not a fix: it makes the labels unique while leaving both imports pointed at the
+same resource, so it hides exactly this defect.
+
 Third consideration, and the reason output is split: **a Terraform provider
 configuration covers one credential scope.** For ``hashicorp/aws`` it also covers
 exactly one region, so a file whose import blocks span regions cannot resolve them
@@ -50,6 +62,7 @@ by, or a dependency of this project. See NOTICE.md.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 from remgen import PROJECT_NAME
 from remgen.core.generators.common import comment_block, recipe_notes, render_template
@@ -81,6 +94,40 @@ _NO_RESULTS = """
 """
 
 
+class HclGenerationError(ValueError):
+    """Base for conditions that make a ``.tf`` file impossible to emit correctly."""
+
+
+class HclMergeConflict(HclGenerationError):
+    """Raised when two recipes on one resource disagree about what to set.
+
+    Refusing to emit is the only correct outcome. The alternatives are to pick a
+    winner -- which silently discards a remediation the user asked for -- or to
+    emit both, which is a duplicate argument that HCL rejects. A conflict here is
+    always a defect in the recipe set rather than in the user's input, because the
+    recipes are hand-written and their overlap is knowable without seeing any
+    findings; :mod:`tests.test_recipe_set` asserts the shipped set has none.
+    """
+
+
+class AmbiguousImportError(HclGenerationError):
+    """Raised when one file would contain two ``import`` blocks with the same id.
+
+    Distinct from :class:`HclMergeConflict`, and a different person's bug. A merge
+    conflict means two recipes disagree; this means two *different live resources*
+    share an import identifier because they are in different credential scopes, and
+    a single provider configuration covers one scope. Whichever scope the provider
+    authenticates to, one of the two blocks adopts and reconfigures a same-named
+    resource in the wrong account -- the failure :mod:`remgen.core.layout` exists to
+    prevent, which is why a correct caller splits by scope before rendering and
+    never sees this.
+
+    It is checked here anyway because the layout split is the *only* thing standing
+    between this file and that outcome, and "a different module is careful" is not a
+    property this module can verify. ``tofu validate`` accepts such a file.
+    """
+
+
 def _disambiguated_label(finding: Finding) -> str:
     """Return a label that also encodes the account and region.
 
@@ -93,51 +140,310 @@ def _disambiguated_label(finding: Finding) -> str:
     return f"{base}_{suffix}"
 
 
-def assign_labels(pairs: list[tuple[Recipe, Finding]]) -> dict[int, str]:
-    """Map each pair's index to a unique HCL resource label.
+def _version_key(version: str) -> tuple[int, ...]:
+    """Parse a provider version into a comparable tuple, tolerating junk.
 
-    HCL requires labels to be unique per resource type within a module, and
-    :func:`to_hcl_label` derives a label from the resource id alone. Two resources
-    with the same name in different accounts or regions -- a routine dev/prod
-    pattern -- therefore produce the same label, and the emitted file fails
-    ``validate`` with "Duplicate resource configuration". Because the CLI reports
-    success in that case, the failure only surfaces when someone tries to apply.
-
-    Labels are assigned over the whole set so the result is deterministic and
-    independent of ordering: a resource id that appears once keeps its short
-    label; one that appears more than once *within the same resource type* gets
-    the account and region appended. If that still collides, a short digest of the
-    identifying tuple is appended, so a label is never silently reused.
+    Only ever used to pick the *higher* of two constraints, so a component that is
+    not a number sorts as 0 rather than raising: a malformed version in one recipe
+    should not stop a run, and understating a requirement is caught by ``tofu
+    init`` while crashing the generator is not caught by anything.
     """
-    # Count bare labels per resource type -- uniqueness is per type, not global.
-    counts: dict[tuple[str, str], int] = {}
-    for recipe, finding in pairs:
-        if recipe.hcl is None:
+    parts: list[int] = []
+    for part in version.split("."):
+        parts.append(int(part) if part.isdigit() else 0)
+    return tuple(parts)
+
+
+@dataclass(frozen=True)
+class MergedTarget:
+    """Every remediation that applies to one live resource, as one HCL block.
+
+    Values here are already **rendered** against :attr:`finding`, which is what
+    makes the merge trustworthy: two recipes agree only if the text they would emit
+    is identical, and ``import_id_template`` is a template rather than a literal --
+    ``aws_cloudtrail`` renders
+    ``arn:aws:cloudtrail:{region}:{account_id}:trail/{resource_id}`` -- so grouping
+    on the template would put two different trails in one block.
+
+    Attributes:
+        resource_type: Provider resource type, shared by every contributing recipe.
+        import_id: The rendered import identifier. Together with the account and
+            region this identifies the live resource.
+        finding: The finding these were rendered against. Contributing findings
+            differ only in ``policy_id``, since resource, region and account are
+            part of the merge key.
+        recipes: Contributing recipes, ordered deterministically by title then id
+            so output does not depend on input ordering.
+        attributes: Merged ``(name, value, comment)`` rows, rendered.
+        blocks: Merged nested blocks, rendered.
+        unresolvable_names: What a human must still complete, after merging. A
+            recipe that supplies a real value for another's TODO removes it from
+            here -- one of the concrete wins of merging, not just a tidier file.
+        min_provider_version: The highest requirement among the contributors.
+        label: The HCL resource label, assigned across the whole file by
+            :func:`group_targets`.
+    """
+
+    resource_type: str
+    import_id: str
+    finding: Finding
+    recipes: tuple[Recipe, ...]
+    attributes: tuple[tuple[str, str, str], ...]
+    blocks: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...]
+    unresolvable_names: tuple[str, ...]
+    min_provider_version: str
+    label: str = ""
+
+    @property
+    def is_complete(self) -> bool:
+        """True when the emitted resource block needs no human completion."""
+        return not self.unresolvable_names
+
+    @property
+    def safety_tier(self) -> SafetyTier:
+        """The riskiest tier among the contributing recipes.
+
+        A merged block is applied as a unit, so it must be filed under the riskiest
+        thing it does. Filing a block that also enables versioning under the
+        ``SAFEST`` banner because one of its two policies is safe would defeat the
+        gate the banner exists to be.
+        """
+        return max((r.safety_tier for r in self.recipes), key=lambda t: t.rank)
+
+    @property
+    def policy_ids(self) -> tuple[str, ...]:
+        """Contributing policy ids, in :attr:`recipes` order."""
+        return tuple(r.policy_id for r in self.recipes)
+
+
+def _merge_rows(
+    into: dict[str, tuple[str, str, str]],
+    rows: list[tuple[str, str, str]],
+    *,
+    policy_id: str,
+    owners: dict[str, str],
+    where: str,
+    resource: str,
+) -> None:
+    """Merge rendered ``(name, value, comment)`` rows, rejecting disagreement.
+
+    Identical values are the common and expected case -- both recipes for a bucket
+    set ``bucket = "b"`` -- and merge silently. A TODO placeholder always loses to a
+    real value, because the placeholder is an admission that nothing knew the answer
+    and the other recipe does.
+    """
+    for name, value, comment in rows:
+        existing = into.get(name)
+        if existing is None:
+            into[name] = (name, value, comment)
+            owners[name] = policy_id
             continue
-        key = (recipe.hcl.resource_type, to_hcl_label(finding.resource_id))
+        if existing[1] == value:
+            continue
+        # A real value supersedes a placeholder in either direction. Only the
+        # comment distinguishes them, so that is what is checked: a stub carries the
+        # recipe's TODO text and a real attribute carries none.
+        if existing[2] and not comment:
+            into[name] = (name, value, comment)
+            owners[name] = policy_id
+            continue
+        if comment and not existing[2]:
+            continue
+        raise HclMergeConflict(
+            f"{resource}: policies {owners[name]} and {policy_id} both set "
+            f"{where}{name} on the same resource but disagree -- "
+            f"{existing[1]!r} vs {value!r}. Emitting both is a duplicate argument "
+            f"and picking one would silently drop a remediation. Reconcile the two "
+            f"recipes, or give them separate resource types."
+        )
+
+
+def group_targets(
+    pairs: list[tuple[Recipe, Finding]], *, scope_noun: str = "credential scope"
+) -> list[MergedTarget]:
+    """Collapse pairs into one :class:`MergedTarget` per live resource.
+
+    Args:
+        pairs: The remediations to group.
+        scope_noun: This cloud's word for the credential scope, used in the
+            :exc:`AmbiguousImportError` message. That message is printed to an
+            operator on exit 6, and it hardcoded "account" -- so an Azure user was
+            told to "split the findings by account" and that "one provider
+            configuration covers one account", neither of which names anything in
+            their estate. The default is the neutral phrase rather than ``"account"``
+            because a wrong noun reads as authoritative while a generic one reads as
+            generic.
+
+    The merge key is ``(resource_type, rendered import id, account, region)``. The
+    account and region are part of it even though the import id often already
+    contains them: for ``{resource_id}``-style ids it does not, and ``GameScores``
+    in two accounts is two different tables that must not be merged into one block.
+
+    Labels are assigned here rather than by the caller, because HCL label
+    uniqueness is a property of the whole file and cannot be decided one block at a
+    time. A resource id that appears once keeps its short label; one that appears
+    more than once *within the same resource type* gets the account and region
+    appended, and an ordinal is used as a final backstop so a label is never
+    silently reused -- reachable when two distinct ids fold to one label, e.g.
+    ``a/b`` and ``a_b``.
+
+    Pairs whose recipe has no HCL target are skipped, matching :func:`render_hcl`.
+
+    Returns:
+        Targets in a deterministic order that does not depend on the order of
+        ``pairs``, so regenerating a file produces a reviewable diff rather than a
+        reshuffle.
+
+    Raises:
+        HclMergeConflict: If two recipes on one resource disagree about a value.
+        AmbiguousImportError: If two resources in different credential scopes would
+            claim the same import identifier in one file.
+        TemplateError: If a recipe's templates and its finding are incompatible.
+        UnsafeIdentifierError: If a finding value fails validation.
+    """
+    # Sorted first so both the merge order and the resulting attribute order are
+    # independent of how the caller ordered its pairs.
+    ordered = sorted(
+        (p for p in pairs if p[0].hcl is not None),
+        key=lambda p: (p[0].policy_title, p[0].policy_id, p[1].resource_id),
+    )
+
+    # Accumulators keyed by the merge key, kept in first-seen order of that sorted
+    # sequence, which is itself deterministic.
+    groups: dict[tuple[str, str, str, str], dict] = {}
+    for recipe, finding in ordered:
+        target = recipe.hcl
+        if target is None:  # pragma: no cover - filtered above; narrows the type
+            continue
+        import_id = render_template(target.import_id_template, finding)
+        key = (target.resource_type, import_id, finding.account_id, finding.region)
+        state = groups.get(key)
+        if state is None:
+            state = {
+                "finding": finding,
+                "recipes": [],
+                "attrs": {},
+                "attr_owners": {},
+                "blocks": {},
+                "block_owners": {},
+                "unresolvable_blocks": [],
+                "version": target.min_provider_version,
+            }
+            groups[key] = state
+        state["recipes"].append(recipe)
+        resource = f"{target.resource_type} {import_id!r}"
+
+        rows = [(name, render_template(raw, finding), "") for name, raw in target.attributes]
+        rows.extend(
+            (name, render_template(placeholder, finding), comment)
+            for name, placeholder, comment in target.unresolvable_required_attributes
+        )
+        _merge_rows(
+            state["attrs"],
+            rows,
+            policy_id=recipe.policy_id,
+            owners=state["attr_owners"],
+            where="",
+            resource=resource,
+        )
+
+        for block_name, block_attrs in target.blocks:
+            inner = state["blocks"].setdefault(block_name, {})
+            owners = state["block_owners"].setdefault(block_name, {})
+            _merge_rows(
+                inner,
+                [(n, render_template(v, finding), c) for n, v, c in block_attrs],
+                policy_id=recipe.policy_id,
+                owners=owners,
+                where=f"{block_name}.",
+                resource=resource,
+            )
+
+        for name in target.unresolvable_required_blocks:
+            if name not in state["unresolvable_blocks"]:
+                state["unresolvable_blocks"].append(name)
+        if _version_key(target.min_provider_version) > _version_key(state["version"]):
+            state["version"] = target.min_provider_version
+
+    targets: list[MergedTarget] = []
+    for (resource_type, import_id, _account, _region), state in groups.items():
+        attributes = tuple(state["attrs"].values())
+        # A name that survived as a TODO after merging is still unresolved; one that
+        # another recipe filled in has lost its comment and is no longer listed.
+        unresolved_attrs = tuple(name for name, _v, comment in attributes if comment)
+        targets.append(
+            MergedTarget(
+                resource_type=resource_type,
+                import_id=import_id,
+                finding=state["finding"],
+                recipes=tuple(state["recipes"]),
+                attributes=attributes,
+                blocks=tuple(
+                    (name, tuple(rows.values())) for name, rows in state["blocks"].items()
+                ),
+                unresolvable_names=unresolved_attrs + tuple(state["unresolvable_blocks"]),
+                min_provider_version=state["version"],
+            )
+        )
+
+    # Two targets that survived the merge with the same (resource_type, import id)
+    # differ only by account or region -- otherwise they would be one target. That
+    # is two import blocks claiming one identifier, and the provider resolves it
+    # against whichever scope it is authenticated to. Checked before labels are
+    # assigned, because disambiguating the labels is what makes this *look* fixed.
+    by_import: dict[tuple[str, str], MergedTarget] = {}
+    for target in targets:
+        key = (target.resource_type, target.import_id)
+        clash = by_import.get(key)
+        if clash is not None:
+            raise AmbiguousImportError(
+                f"{target.resource_type} {target.import_id!r} would be imported twice "
+                f"in one file: once for {scope_noun} {clash.finding.account_id} / "
+                f"{clash.finding.region} and once for {scope_noun} "
+                f"{target.finding.account_id} / {target.finding.region}. One provider "
+                f"configuration covers one {scope_noun}, so one of these would adopt "
+                f"and reconfigure a same-named resource in the wrong {scope_noun}. "
+                f"Split the findings by {scope_noun} (and region) before rendering -- "
+                f"see remgen.core.layout."
+            )
+        by_import[key] = target
+
+    # Labels, assigned over the whole set. Counted per resource type because HCL
+    # uniqueness is per type: an S3 and a DynamoDB block may share a label.
+    counts: dict[tuple[str, str], int] = {}
+    for target in targets:
+        key = (target.resource_type, to_hcl_label(target.finding.resource_id))
         counts[key] = counts.get(key, 0) + 1
 
-    labels: dict[int, str] = {}
+    labelled: list[MergedTarget] = []
     used: set[tuple[str, str]] = set()
-    for index, (recipe, finding) in enumerate(pairs):
-        if recipe.hcl is None:
-            continue
-        rtype = recipe.hcl.resource_type
-        bare = to_hcl_label(finding.resource_id)
-        label = bare if counts[(rtype, bare)] == 1 else _disambiguated_label(finding)
-        if (rtype, label) in used:
-            # Reached only when two findings are identical in resource id, region
-            # and account for the same resource type -- the caller dedupes true
-            # duplicates first, so this is a backstop. A digest of the identifying
-            # tuple would be identical for identical findings and so would collide
-            # again; an ordinal is unconditionally unique.
+    for target in targets:
+        bare = to_hcl_label(target.finding.resource_id)
+        label = (
+            bare
+            if counts[(target.resource_type, bare)] == 1
+            else _disambiguated_label(target.finding)
+        )
+        if (target.resource_type, label) in used:
             stem, n = label, 2
-            while (rtype, f"{stem}_{n}") in used:
+            while (target.resource_type, f"{stem}_{n}") in used:
                 n += 1
             label = f"{stem}_{n}"
-        used.add((rtype, label))
-        labels[index] = label
-    return labels
+        used.add((target.resource_type, label))
+        labelled.append(
+            MergedTarget(
+                resource_type=target.resource_type,
+                import_id=target.import_id,
+                finding=target.finding,
+                recipes=target.recipes,
+                attributes=target.attributes,
+                blocks=target.blocks,
+                unresolvable_names=target.unresolvable_names,
+                min_provider_version=target.min_provider_version,
+                label=label,
+            )
+        )
+    return labelled
 
 
 def _align(rows: list[tuple[str, str, str]], indent: str) -> list[str]:
@@ -162,37 +468,34 @@ def _align(rows: list[tuple[str, str, str]], indent: str) -> list[str]:
     return lines
 
 
-def _attr_lines(recipe: Recipe, finding: Finding, indent: str = "  ") -> list[str]:
+def _attr_lines(target: MergedTarget, indent: str = "  ") -> list[str]:
     """Render the body of a resource block: attributes, stubs, nested blocks.
 
-    Raises:
-        ValueError: If the recipe has no HCL target. Callers filter for this, but
-            the check is a real statement rather than an ``assert`` because
-            ``assert`` is removed under ``python -O`` -- precisely the build where
-            an unguarded ``None`` would produce a malformed resource block.
+    Values arrive already rendered and already merged, because whether two recipes
+    agree is a question about the text they emit, not about their templates.
     """
-    if recipe.hcl is None:
-        raise ValueError(f"{recipe.policy_id}: no HCL target for this recipe")
-
-    rows: list[tuple[str, str, str]] = [
-        (name, render_template(raw, finding), "") for name, raw in recipe.hcl.attributes
-    ]
-    # Placeholders are type-valid stubs rather than `null`, because the provider
-    # rejects `null` for a required argument just as it rejects an absent one.
-    # A stub keeps `tofu validate` usable as a pre-completion check.
-    rows.extend(
-        (name, render_template(placeholder, finding), comment)
-        for name, placeholder, comment in recipe.hcl.unresolvable_required_attributes
-    )
-    lines = _align(rows, indent)
-
-    for block_name, block_attrs in recipe.hcl.blocks:
-        inner = [(n, render_template(v, finding), c) for n, v, c in block_attrs]
+    lines = _align(list(target.attributes), indent)
+    for block_name, block_attrs in target.blocks:
         lines.append("")
         lines.append(f"{indent}{block_name} {{")
-        lines.extend(_align(inner, indent + "  "))
+        lines.extend(_align(list(block_attrs), indent + "  "))
         lines.append(f"{indent}}}")
     return lines
+
+
+def _incomplete_note(names: tuple[str, ...]) -> tuple[str, str]:
+    """Return the blank line and the INCOMPLETE warning for ``names``.
+
+    Stays inline and stays explicit wherever it is emitted: a placeholder that looks
+    like a value is the one failure here that silently reconfigures a resource.
+    """
+    return (
+        "",
+        f"INCOMPLETE: the provider requires {', '.join(names)}, which a finding cannot "
+        "supply. The TODO placeholders below satisfy type checking only -- replace each "
+        "with the resource's real value, or the import will reconfigure the resource "
+        "incorrectly.",
+    )
 
 
 def hcl_recipe_notes(recipe: Recipe) -> list[str]:
@@ -201,25 +504,113 @@ def hcl_recipe_notes(recipe: Recipe) -> list[str]:
     The shared recipe notes plus the HCL-specific provider requirement and, when the
     resource block needs human completion, the reason. Emitted once per policy; see
     :func:`~remgen.core.generators.common.recipe_notes` for why.
+
+    Describes one recipe in isolation, so it is used for a standalone block and for
+    the per-policy header. A *merged* block is described by
+    :func:`_merged_target_notes`, which has to state the union across contributors
+    rather than any single recipe's view.
     """
     notes = recipe_notes(recipe)
     if recipe.hcl is None:
         return notes
     notes.append(f"Requires provider >= {recipe.hcl.min_provider_version}")
     if not recipe.hcl.is_complete:
-        # Stays inline and stays explicit: a placeholder that looks like a value is
-        # the one failure here that silently reconfigures a resource.
-        notes.extend(
-            (
-                "",
-                "INCOMPLETE: the provider requires "
-                f"{', '.join(recipe.hcl.unresolvable_names)}, which a finding cannot "
-                "supply. The TODO placeholders below satisfy type checking only -- "
-                "replace each with the resource's real value, or the import will "
-                "reconfigure the resource incorrectly.",
-            )
-        )
+        notes.extend(_incomplete_note(recipe.hcl.unresolvable_names))
     return notes
+
+
+def _merged_target_notes(target: MergedTarget) -> list[str]:
+    """Return the comment lines for a block that applies more than one policy.
+
+    A merged block is not described by any one of its recipes: its provider
+    requirement is the highest of theirs, its completion list is what survived the
+    merge, and its safety notes are the union -- so a reader looking at the block
+    sees that it also, say, enables versioning irreversibly. Stating one
+    contributor's notes and omitting the rest would be the same failure as hoisting
+    a consequence warning out of the artifact.
+    """
+    notes = [
+        f"{len(target.recipes)} POLICIES on this one resource, applied together:",
+        # One title per bullet rather than a comma-joined run-on: a joined line wraps
+        # mid-title at the comment width, so a reader scanning for a policy sees half
+        # its name at the end of one line and half at the start of the next.
+        *(f"- {r.policy_title}" for r in target.recipes),
+        "Policy IDs: " + ", ".join(target.policy_ids),
+        "",
+        "Merged into a single import + resource pair on purpose. Two import blocks "
+        "naming the same resource are valid configuration -- `validate` passes -- and "
+        "fail only at plan/apply. Applying this block applies every policy above; "
+        "they cannot be separated here.",
+    ]
+    # Union, de-duplicated, in contributor order. Two recipes can derive the same
+    # note (both irreversible), and repeating it reads as two separate warnings.
+    #
+    # Attributed to their policy, because a merged block otherwise emits two bare
+    # "Reversible: <command>" lines with different commands, and a reader undoing the
+    # block would take either one as *the* reversal when both are needed. The policy
+    # title says which change each line undoes.
+    seen: list[str] = []
+    for recipe in target.recipes:
+        for note in recipe.safety_notes:
+            attributed = f"[{recipe.policy_title}] {note}"
+            if attributed not in seen:
+                seen.append(attributed)
+    if seen:
+        notes.append("")
+        notes.append(
+            "Every note below applies to this one block. Each is tagged with the policy "
+            "it comes from, because reversing this block means reversing each policy's "
+            "change, not just one of them."
+        )
+        notes.extend(seen)
+    notes.append("Summary, caveats and docs: see README.md")
+    notes.append(f"Requires provider >= {target.min_provider_version}")
+    if not target.is_complete:
+        notes.extend(_incomplete_note(target.unresolvable_names))
+    return notes
+
+
+def render_target(target: MergedTarget, *, standalone: bool = True) -> str:
+    """Render the import + resource block pair for one live resource.
+
+    Args:
+        target: The merged remediation for a single resource, from
+            :func:`group_targets`.
+        standalone: When True, prefix the full description so the block is
+            self-contained. :func:`render_hcl` passes False because it emits that
+            description once per policy group, or once above a merged block.
+    """
+    label = target.label or to_hcl_label(target.finding.resource_id)
+
+    # Only what is specific to this resource. Everything shared -- summary, safety
+    # notes, prerequisites, caveats, provider version, docs -- is emitted once per
+    # group by render_hcl, or by the notes helpers when rendering standalone.
+    notes: list[str] = [target.finding.resource_id]
+    if standalone:
+        header = (
+            hcl_recipe_notes(target.recipes[0])
+            if len(target.recipes) == 1
+            else _merged_target_notes(target)
+        )
+        notes = header + ["", f"Resource: {target.finding.resource_id}"]
+    if not target.is_complete:
+        notes.append(
+            f"TODO: replace the {', '.join(target.unresolvable_names)} placeholder(s) "
+            "below with this resource's real value(s) before applying."
+        )
+
+    attrs = "\n".join(_attr_lines(target))
+    return (
+        f"{comment_block(notes)}\n"
+        f"import {{\n"
+        f"  to = {target.resource_type}.{label}\n"
+        f'  id = "{target.import_id}"\n'
+        f"}}\n"
+        f"\n"
+        f'resource "{target.resource_type}" "{label}" {{\n'
+        f"{attrs}\n"
+        f"}}\n"
+    )
 
 
 def render_one(
@@ -229,20 +620,22 @@ def render_one(
     *,
     standalone: bool = True,
 ) -> str:
-    """Render the import + resource block pair for a single finding.
+    """Render the import + resource block pair for a single ``(recipe, finding)``.
+
+    A convenience wrapper over :func:`group_targets` and :func:`render_target` for
+    the one-pair case. Multi-finding callers must go through :func:`group_targets`
+    instead: rendering pair-by-pair is what produced two ``import`` blocks for one
+    resource, and no per-block function can detect that, because the collision is a
+    property of the set.
 
     Args:
         recipe: The remediation to render.
         finding: The violation to render it against.
-        label: The HCL resource label to use. Normally supplied by
-            :func:`assign_labels`, which guarantees uniqueness across the whole
-            file. Defaults to the resource-id-derived label, which is correct for
-            a single block but *not* unique when two resources in different
-            accounts or regions share a name -- so multi-finding callers must pass
-            an assigned label.
+        label: Override the HCL resource label. Defaults to the resource-id-derived
+            label, which is unique for a single block but *not* across a file where
+            two resources in different accounts share a name.
         standalone: When True, prefix the full recipe description so the block is
-            self-contained. :func:`render_hcl` passes False because it emits that
-            description once per policy.
+            self-contained.
 
     Raises:
         ValueError: If the recipe has no HCL target.
@@ -254,36 +647,10 @@ def render_one(
             f"{recipe.policy_id}: no HCL target for this recipe; callers must filter "
             f"on `recipe.hcl is not None` before rendering"
         )
-
-    target = recipe.hcl
-    if label is None:
-        label = to_hcl_label(finding.resource_id)
-    import_id = render_template(target.import_id_template, finding)
-
-    # Only what is specific to this resource. Everything shared -- summary, safety
-    # notes, prerequisites, caveats, provider version, docs -- is emitted once per
-    # policy by render_hcl, or by hcl_recipe_notes when rendering standalone.
-    notes: list[str] = [finding.resource_id]
-    if standalone:
-        notes = hcl_recipe_notes(recipe) + ["", f"Resource: {finding.resource_id}"]
-    if not target.is_complete:
-        notes.append(
-            f"TODO: replace the {', '.join(target.unresolvable_names)} placeholder(s) "
-            "below with this resource's real value(s) before applying."
-        )
-
-    attrs = "\n".join(_attr_lines(recipe, finding))
-    return (
-        f"{comment_block(notes)}\n"
-        f"import {{\n"
-        f"  to = {target.resource_type}.{label}\n"
-        f'  id = "{import_id}"\n'
-        f"}}\n"
-        f"\n"
-        f'resource "{target.resource_type}" "{label}" {{\n'
-        f"{attrs}\n"
-        f"}}\n"
-    )
+    target = group_targets([(recipe, finding)])[0]
+    if label is not None:
+        target = replace(target, label=label)
+    return render_target(target, standalone=standalone)
 
 
 def render_hcl(
@@ -318,6 +685,12 @@ def render_hcl(
             drops it is the case that gets applied against the wrong scope, so
             providers must pass one; the default exists only for unit tests that
             render a single block.
+
+    Raises:
+        HclGenerationError: If the pairs cannot be rendered as one correct file --
+            either two recipes on one resource disagree
+            (:class:`HclMergeConflict`) or two resources in different scopes claim
+            one import id (:class:`AmbiguousImportError`). See :func:`group_targets`.
     """
     parts: list[str] = [
         _HEADER.format(
@@ -331,50 +704,85 @@ def render_hcl(
     if unit is not None and scope_block is not None:
         parts.append(scope_block(unit))
 
-    # Labels are assigned across the whole file, not per block: uniqueness is a
-    # property of the set, so it cannot be decided one block at a time.
-    labels = assign_labels(pairs)
-    renderable = [(i, r, f) for i, (r, f) in enumerate(pairs) if r.hcl is not None]
-    if not renderable:
+    # One target per live resource, with labels assigned across the whole file:
+    # both merging and label uniqueness are properties of the set, so neither can
+    # be decided one block at a time.
+    #
+    # The scope noun comes from the unit so the clash message names what the operator
+    # actually has ("subscription", not "account"). Falls back to the neutral default
+    # when rendering without a unit, which only unit tests do.
+    targets = group_targets(pairs, **({"scope_noun": unit.scope_noun} if unit is not None else {}))
+    if not targets:
         parts.append(_NO_RESULTS)
         return "".join(parts)
 
     # A count only -- the reason and the consequence are stated once per policy
     # below, and repeating them here made the same paragraph appear twice in every
     # file. What a reader needs at the top is how much completion work there is.
-    incomplete = sum(1 for _, r, _f in renderable if not r.hcl.is_complete)
+    incomplete = sum(1 for t in targets if not t.is_complete)
     if incomplete:
         parts.append(
-            f"\n# TODO: {incomplete} of {len(renderable)} resource block(s) below need "
+            f"\n# TODO: {incomplete} of {len(targets)} resource block(s) below need "
             f"values completed before applying.\n"
         )
 
+    merged = [t for t in targets if len(t.recipes) > 1]
+    if merged:
+        # Stated up front because it changes what "delete the block you disagree
+        # with" costs: for these, deleting one drops several remediations. The CLI
+        # script has no equivalent -- its commands stay independent -- so a reader
+        # comparing the two formats needs to know why the counts differ.
+        parts.append(
+            f"\n# NOTE: {len(merged)} of {len(targets)} resource block(s) below apply more "
+            f"than one\n# policy to a single resource, merged because two `import` blocks "
+            f"cannot name the\n# same resource. Each is labelled with every policy it "
+            f"applies.\n"
+        )
+
     for tier in (SafetyTier.SAFEST, SafetyTier.CAUTION, SafetyTier.DISRUPTIVE):
-        in_tier = [(i, r, f) for i, r, f in renderable if r.safety_tier is tier]
+        in_tier = [t for t in targets if t.safety_tier is tier]
         if not in_tier:
             continue
         bar = "=" * 74
         parts.append(f"\n# {bar}\n# Safety tier: {tier.value.upper()}\n# {bar}\n")
-        # Group by policy so each recipe's description and warnings are stated once
-        # above the blocks they govern, rather than repeated on every block. Grouped
-        # by (recipe, index) rather than by Finding, because two findings can be
-        # equal objects and each still needs its own distinct label.
-        groups: dict[str, tuple[Recipe, list[int]]] = {}
-        for index, recipe, _finding in in_tier:
-            entry = groups.setdefault(recipe.policy_id, (recipe, []))
-            entry[1].append(index)
 
-        by_index = {i: f for i, _r, f in in_tier}
-        for recipe, group_indices in groups.values():
+        # Single-policy blocks are grouped by policy so each recipe's description and
+        # warnings are stated once above the blocks they govern rather than repeated
+        # on every one. A merged block cannot join such a group -- it belongs to
+        # several policies and its notes are the union -- so each carries its own
+        # header. That is not a regression in size: merging is per resource, so at
+        # most one merged block exists per resource either way.
+        groups: dict[str, tuple[Recipe, list[MergedTarget]]] = {}
+        standalone: list[MergedTarget] = []
+        for target in in_tier:
+            if len(target.recipes) > 1:
+                standalone.append(target)
+                continue
+            recipe = target.recipes[0]
+            entry = groups.setdefault(recipe.policy_id, (recipe, []))
+            entry[1].append(target)
+
+        for recipe, group_targets_ in groups.values():
             notes = hcl_recipe_notes(recipe)
-            notes.append(f"Resources below: {len(group_indices)}")
+            notes.append(f"Resources below: {len(group_targets_)}")
             parts.append("\n" + comment_block(notes) + "\n")
-            for index in group_indices:
-                parts.append(
-                    "\n" + render_one(recipe, by_index[index], labels[index], standalone=False)
-                )
+            for target in group_targets_:
+                parts.append("\n" + render_target(target, standalone=False))
+
+        for target in standalone:
+            parts.append("\n" + render_target(target, standalone=True))
 
     return "".join(parts)
 
 
-__all__ = ["assign_labels", "hcl_recipe_notes", "render_hcl", "render_one"]
+__all__ = [
+    "AmbiguousImportError",
+    "HclGenerationError",
+    "HclMergeConflict",
+    "MergedTarget",
+    "group_targets",
+    "hcl_recipe_notes",
+    "render_hcl",
+    "render_one",
+    "render_target",
+]

@@ -1,0 +1,112 @@
+{
+  "generator": "azremgen (curated-cloud-remediation-generator)",
+  "version": "0.1.0",
+  "generated_at": "2026-08-07T13:11:14+00:00",
+  "applied": false,
+  "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
+  "clouds": [
+    "azure"
+  ],
+  "scopes": [
+    "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7",
+    "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c"
+  ],
+  "policies": {
+    "0662810d-c71d-46a3-a937-e1c2b24792e4": {
+      "title": "Storage Account insecure communication",
+      "safety_tier": "safest",
+      "api": "storage.StorageAccountsOperations.update",
+      "reversible": true,
+      "hcl_resource_type": "azurerm_storage_account"
+    },
+    "29307516-af03-445b-a22c-5dfa62598b22": {
+      "title": "Storage Account cross-tenant replication is enabled",
+      "safety_tier": "safest",
+      "api": "storage.StorageAccountsOperations.update",
+      "reversible": true,
+      "hcl_resource_type": "azurerm_storage_account"
+    },
+    "bed905d4-758c-4698-9ed8-4cdd4271eb4e": {
+      "title": "Storage Account in transit is not enabled",
+      "safety_tier": "safest",
+      "api": "storage.StorageAccountsOperations.update",
+      "reversible": true,
+      "hcl_resource_type": "azurerm_storage_account"
+    },
+    "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3": {
+      "title": "SQL Database is not encrypted with transparent data encryption",
+      "safety_tier": "safest",
+      "api": "sql.TransparentDataEncryptionsOperations.begin_create_or_update",
+      "reversible": true,
+      "hcl_resource_type": "azurerm_mssql_database"
+    }
+  },
+  "files": [
+    {
+      "file": "remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.sh",
+      "path": "azure/remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.sh",
+      "cloud": "azure",
+      "format": "cli",
+      "scope_id": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7",
+      "scope_noun": "subscription",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 4,
+      "policy_counts": {
+        "0662810d-c71d-46a3-a937-e1c2b24792e4": 1,
+        "29307516-af03-445b-a22c-5dfa62598b22": 1,
+        "bed905d4-758c-4698-9ed8-4cdd4271eb4e": 1,
+        "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3": 1
+      }
+    },
+    {
+      "file": "remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.sh",
+      "path": "azure/remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.sh",
+      "cloud": "azure",
+      "format": "cli",
+      "scope_id": "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c",
+      "scope_noun": "subscription",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 1,
+      "policy_counts": {
+        "bed905d4-758c-4698-9ed8-4cdd4271eb4e": 1
+      }
+    },
+    {
+      "file": "remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.tf",
+      "path": "azure/remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.tf",
+      "cloud": "azure",
+      "format": "hcl",
+      "scope_id": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7",
+      "scope_noun": "subscription",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 4,
+      "policy_counts": {
+        "0662810d-c71d-46a3-a937-e1c2b24792e4": 1,
+        "29307516-af03-445b-a22c-5dfa62598b22": 1,
+        "bed905d4-758c-4698-9ed8-4cdd4271eb4e": 1,
+        "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3": 1
+      }
+    },
+    {
+      "file": "remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.tf",
+      "path": "azure/remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.tf",
+      "cloud": "azure",
+      "format": "hcl",
+      "scope_id": "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c",
+      "scope_noun": "subscription",
+      "region": null,
+      "part": null,
+      "total_parts": 1,
+      "remediations": 1,
+      "policy_counts": {
+        "bed905d4-758c-4698-9ed8-4cdd4271eb4e": 1
+      }
+    }
+  ]
+}

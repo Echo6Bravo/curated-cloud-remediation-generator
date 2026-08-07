@@ -1,30 +1,67 @@
 """Invariants of the recipe *set*, as opposed to of any single recipe.
 
 Every other recipe test in this suite is parametrized per recipe, which means none
-of them can see a property that only exists across two entries. A duplicate HCL
-target, a policy id that appears twice, an API operation two recipes disagree about
--- each is invisible to a test that is handed one recipe at a time, and each is a way
-the shipped output goes wrong.
+of them can see a property that only exists across two entries. Two recipes
+sharing an HCL target while disagreeing about what to set, a policy id that appears
+twice, an API operation two recipes disagree about -- each is invisible to a test that
+is handed one recipe at a time, and each is a way the shipped output goes wrong.
 
 The recipe set is also the file a contributor is most likely to edit, and the one
 where a mistake is least likely to look like one: adding a well-formed entry that
 collides with an existing one produces plausible-looking artifacts. So these are
 written as set-level assertions that a new recipe must satisfy, and each states what
 breaks if it does not.
+
+**Two invariants were considered for this file and deliberately left out.** Both are
+recorded here because each looks like an obvious gap, and the reason it is not is the
+kind of thing that gets rediscovered by writing the test and only later noticing it
+proves nothing.
+
+1. *That a merged block inherits the riskiest tier and the highest provider version of
+   its contributors.* Already covered, against constructed overlaps, by
+   ``test_a_merged_block_is_filed_under_the_riskiest_tier_it_carries`` and
+   ``test_a_merged_block_requires_the_highest_provider_version_of_its_parts`` in
+   ``tests/test_generators.py`` -- the latter with a ``5.9``/``5.12`` pair chosen because
+   a lexicographic comparison passes a ``5.0``/``5.12`` one. A set-level restatement
+   could not fail today for the reason
+   ``test_the_whole_set_applied_to_one_resource_emits_one_block_per_resource`` explains:
+   no two shipped recipes share a resource type, so every group has one contributor and
+   there is nothing to inherit. It would be a test that passes because the input is
+   trivial while appearing to check the merge -- worse than its absence, which at least
+   sends a reader to the constructed-overlap tests that do check it.
+2. *That each safety note names the resource it applies to.* ``safety_notes`` is a
+   ``@property`` derived from the flags (:mod:`remgen.core.model`), so any assertion
+   about its contents re-implements the derivation and passes unconditionally. Three of
+   this file's original invariants did exactly that and had to be rewritten against
+   authored fields; the rule that came out of it is above every test below that mentions
+   a derived value. The authored counterpart -- ``caveats`` -- is already constrained by
+   ``test_reversible_recipes_supply_a_reversal_and_irreversible_ones_say_why`` and
+   ``test_usage_scaled_cost_comes_with_a_way_to_bound_it``.
 """
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+import importlib
+import pathlib
+import pkgutil
+from collections import Counter
 
 import pytest
 
-from remgen.core.model import CostImpact, SafetyTier
+from remgen.core.generators.hcl import group_targets
+from remgen.core.model import CostImpact, Finding, SafetyTier
+from remgen.providers.aws import recipes as recipes_pkg
 from remgen.providers.aws.recipes import REGISTRY, all_recipes, get
 
 
 def _recipes():
     return all_recipes()
+
+
+def _service_modules() -> list[str]:
+    return sorted(
+        name for _f, name, ispkg in pkgutil.iter_modules(recipes_pkg.__path__) if not ispkg
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -72,38 +109,152 @@ def test_policy_ids_look_like_uuids():
         assert [len(p) for p in parts] == [8, 4, 4, 4, 12], (
             f"{recipe.policy_id!r} is not a UUID; it will never match a finding"
         )
-        assert recipe.policy_id.islower(), f"{recipe.policy_id} must be lowercase to match"
+        # Compared against its own lowercasing rather than with `islower()`, which is
+        # False for any string containing no cased characters at all -- so an id of
+        # digits and dashes would fail this for having no letters rather than for being
+        # uppercase, reporting a correct id as broken.
+        assert recipe.policy_id == recipe.policy_id.lower(), (
+            f"{recipe.policy_id} must be lowercase to match"
+        )
 
 
 # ---------------------------------------------------------------------------
-# HCL targets: the collision that real parsers do not catch
+# Layout: the per-service split has to stay true, and discovery has to see it all
 # ---------------------------------------------------------------------------
 
 
-def test_no_two_recipes_target_the_same_hcl_resource_type():
-    """Two policies on one resource type produce two import blocks for one resource.
+def test_every_service_module_on_disk_is_actually_discovered():
+    """The failure mode the discovery loop exists to prevent, asserted from outside it.
 
-    This is the invariant protecting the known open defect (ROADMAP: merge HCL blocks
-    targeting one resource). When two recipes share a ``resource_type`` and both match
-    the same resource, the generator emits two ``import`` blocks whose ``id`` is
-    identical. Real ``tofu validate`` reports **"Success!"** on that file -- it is
-    valid configuration -- and the conflict only surfaces at ``plan``/apply time
-    against live infrastructure. So no existing gate catches it, and this test is what
-    stands in until the merge is implemented.
+    Recipes are aggregated by importing every module in the package. If that ever
+    regressed to a hand-written list -- or if a module's recipes stopped being reached
+    for any other reason -- the result is silent: the file exists, imports cleanly and
+    reads correctly, while ``all_recipes`` never returns its entries. The policy then
+    reports as unsupported, every per-recipe test parametrizes over a set that excludes
+    it, and nothing fails.
 
-    If you are adding a recipe that legitimately shares a resource type with an
-    existing one, this test is the thing to fix, not to delete: implement the merge
-    first and then replace this with an assertion about merged output.
+    So this walks the directory itself and requires each module's ``RECIPES`` to be
+    present in the aggregate, comparing by ``policy_id`` because that is what ``get``
+    resolves and therefore what "reached" has to mean.
     """
-    by_type = defaultdict(list)
-    for recipe in _recipes():
-        if recipe.hcl is not None:
-            by_type[recipe.hcl.resource_type].append(recipe.policy_id)
-    collisions = {rtype: ids for rtype, ids in by_type.items() if len(ids) > 1}
-    assert not collisions, (
-        f"two or more recipes target the same HCL resource type: {collisions}. "
-        f"Two import blocks would claim the same resource and `tofu validate` would "
-        f"still pass. Implement block merging before shipping this."
+    modules = _service_modules()
+    assert modules, "no service modules found; the recipe package would aggregate nothing"
+    aggregated = {r.policy_id for r in _recipes()}
+    for name in modules:
+        module = importlib.import_module(f"{recipes_pkg.__name__}.{name}")
+        missing = {r.policy_id for r in module.RECIPES} - aggregated
+        assert not missing, (
+            f"{name}.py declares {missing}, which `all_recipes()` does not return. Those "
+            f"policies would report as unsupported while the recipe sits in the tree."
+        )
+    assert sum(
+        len(importlib.import_module(f"{recipes_pkg.__name__}.{n}").RECIPES) for n in modules
+    ) == len(aggregated), (
+        "the aggregate and the per-module tuples disagree on how many recipes exist"
+    )
+
+
+@pytest.mark.parametrize("module_name", _service_modules())
+def test_each_service_module_only_holds_recipes_for_that_service(module_name):
+    """The module name is the botocore service id, and that is load-bearing.
+
+    The split is only navigable if the filename predicts the contents: a reviewer
+    seeing a diff to ``s3.py`` needs to know it cannot have changed the RDS
+    remediation. Nothing enforces that mechanically except this, and the natural way
+    to break it is convenience -- adding a second service's recipe to whichever file is
+    already open. Asserted per module so a failure names the file rather than the set.
+    """
+    module = importlib.import_module(f"{recipes_pkg.__name__}.{module_name}")
+    services = {r.api.service for r in module.RECIPES}
+    assert services == {module_name}, (
+        f"{module_name}.py holds recipes for {sorted(services)}. One module per AWS "
+        f"service, named for the botocore service id -- move the others to their own file."
+    )
+
+
+def test_no_service_module_is_empty_or_missing_its_export():
+    """An empty module is a file that looks like coverage and provides none.
+
+    The discovery loop raises on this at import, so this test states the same rule
+    where a contributor reading the tests finds it, and covers the case where the
+    loop's own guard is weakened.
+    """
+    for name in _service_modules():
+        module = importlib.import_module(f"{recipes_pkg.__name__}.{name}")
+        found = getattr(module, "RECIPES", None)
+        assert isinstance(found, tuple) and found, (
+            f"{name}.py must export a non-empty RECIPES tuple; it is loaded as a recipe "
+            f"source, so an empty one contributes nothing while appearing to"
+        )
+
+
+def test_the_package_holds_no_module_that_is_not_a_service():
+    """Every module here is imported as a recipe source, so a helper cannot live here.
+
+    Stated because the consequence is not obvious from the loop: dropping a utility
+    module into this package makes it a discovery target, and it will raise at import
+    for not exporting ``RECIPES``. That is the right failure, but it is better read
+    here than debugged there.
+    """
+    directory = pathlib.Path(recipes_pkg.__file__).parent
+    files = sorted(p.name for p in directory.glob("*.py") if p.name != "__init__.py")
+    assert files == [f"{name}.py" for name in _service_modules()], (
+        f"unexpected files in the recipe package: {files}. Only per-service recipe "
+        f"modules belong here; helpers go one level up."
+    )
+
+
+# ---------------------------------------------------------------------------
+# HCL targets: the collisions that real parsers do not catch
+# ---------------------------------------------------------------------------
+
+
+def test_the_whole_set_applied_to_one_resource_emits_one_block_per_resource():
+    """Every recipe fired at a single resource must merge, not collide.
+
+    Two ``import`` blocks carrying the same ``id`` are *valid configuration*: real
+    ``tofu validate`` reports "Success!", because nothing at parse time knows the two
+    ids name one resource. The conflict surfaces at ``plan``/``apply`` against live
+    infrastructure. :func:`~remgen.core.generators.hcl.group_targets` prevents it by
+    merging per resource, so what has to be checked at the set level is that the
+    merge *succeeds* for this set: two recipes sharing a resource type and an import
+    id must agree about every attribute they both set, or the merge refuses to render.
+
+    That agreement is not something a per-recipe test can see, and it is knowable
+    without any findings -- the recipes are hand-written and their overlap is fixed.
+    Sharing a resource type is now allowed; disagreeing while sharing one is not.
+
+    Be clear about what this currently proves: no two shipped recipes share a resource
+    type yet, so today every group has one contributor and the merge is a no-op here.
+    It is stated at the set level anyway because it is the assertion that starts doing
+    work on the first recipe that overlaps an existing one -- which is exactly when the
+    author will not be looking for this failure. The merge behaviour itself is exercised
+    against constructed overlaps in ``tests/test_generators.py``.
+    """
+    shared = "shared-resource"
+    pairs = [
+        (
+            recipe,
+            Finding(
+                policy_id=recipe.policy_id,
+                resource_id=shared,
+                region="us-east-1",
+                account_id="111111111111",
+            ),
+        )
+        for recipe in _recipes()
+        if recipe.hcl is not None
+    ]
+    assert pairs, "no recipe carries an HCL target; the assertion below is vacuous"
+
+    # Raises HclMergeConflict if two recipes on one resource disagree, and
+    # AmbiguousImportError if two would claim one import id.
+    targets = group_targets(pairs)
+
+    ids = [(t.resource_type, t.import_id) for t in targets]
+    assert len(ids) == len(set(ids)), f"an import id is claimed by two blocks: {ids}"
+    assert sum(len(t.recipes) for t in targets) == len(pairs), (
+        "a recipe was dropped by the merge; every pair must land in exactly one block"
     )
 
 
@@ -326,6 +477,40 @@ def test_no_recipe_ships_an_empty_prose_field(field):
         if field == "reverse_hint" and not recipe.reversible:
             continue
         assert value and value.strip(), f"{recipe.policy_id}: {field} is empty"
+
+
+def test_each_docs_url_points_at_the_operation_the_recipe_actually_calls():
+    """The docs link must name the same operation the recipe runs.
+
+    ``docs_url`` is authored, and the way it goes wrong is not a malformed URL -- it is
+    a *working* link to the wrong page, because the fastest way to write a recipe is to
+    copy the nearest one and edit it. Every existing entry ends in
+    ``API_<Operation>.html``, so the operation name is recoverable from the link and can
+    be compared against ``api.operation`` rather than merely eyeballed.
+
+    Why this is worth a set-level assertion: the run README renders this link as
+    "[Documentation]" (:mod:`remgen.core.artifacts`), so a reader following it to check
+    what the remediation does lands on a page describing a *different* API call -- and
+    reads a parameter list, a set of permissions and a set of consequences belonging to
+    something the tool is not about to run. Nothing else in the suite compares the two:
+    ``test_no_recipe_ships_an_empty_prose_field`` only checks the string is non-empty,
+    and ``verify`` checks the operation against botocore without ever reading the link.
+
+    Not asserted here: that the URL resolves. That would need a network call, and this
+    suite makes none -- the whole tool's safety argument is that it does not.
+    """
+    for recipe in _recipes():
+        assert recipe.docs_url.startswith("https://docs.aws.amazon.com/"), (
+            f"{recipe.policy_id}: docs_url is not an AWS documentation URL "
+            f"({recipe.docs_url!r}); it is rendered as the authoritative reference"
+        )
+        page = recipe.docs_url.rsplit("/", 1)[-1]
+        assert page == f"API_{recipe.api.operation}.html", (
+            f"{recipe.policy_id}: docs_url ends in {page!r}, but the recipe calls "
+            f"{recipe.api.operation} and must link that operation's own page "
+            f"(API_{recipe.api.operation}.html). A link to any other page sends a "
+            f"reader to another call's parameters and consequences."
+        )
 
 
 def test_titles_are_unique_so_the_readme_index_is_unambiguous():

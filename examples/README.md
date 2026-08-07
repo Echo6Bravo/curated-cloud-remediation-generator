@@ -120,27 +120,50 @@ A `resource` block alone would propose creating a duplicate rather than fixing w
 `tofu plan` must report `N to import, 0 to add` — any "to add" means an import id is wrong, and you
 should not apply.
 
-**`TODO` placeholders are expected, and you must complete them.** Three of the blocks in this
-sample contain them, and the run says so. The AWS provider requires arguments a finding cannot
-supply — a DynamoDB table's `hash_key`, an RDS instance's `engine` — so the generator emits a
-type-valid stub instead:
+**One resource gets one pair, however many policies it violates.** A bucket that is both unversioned
+and unencrypted is one `import` and one `resource` block applying both fixes, labelled with every
+policy it carries and filed under the riskiest of their safety tiers. That is not cosmetic: two
+`import` blocks naming the same resource are *valid configuration* — `validate` passes — and fail
+only at `plan`/`apply` against live infrastructure. Nothing in this sample merges, because no two of
+the five shipped recipes target the same resource type.
+
+**`TODO` placeholders are expected, and you must complete them.** Two of the blocks in this sample
+contain them, and the run says so. The AWS provider *parser* requires a few arguments a finding
+cannot supply — a CloudTrail's `s3_bucket_name`, an RDS instance's `instance_class` — so the
+generator emits a type-valid stub instead:
 
 ```hcl
-resource "aws_dynamodb_table" "checkout-sessions" {
-  name                        = "checkout-sessions"
-  deletion_protection_enabled = true
-  hash_key                    = "TODO" # TODO: set to the table's existing hash key
-
-  attribute {
-    name = "TODO" # TODO: must match the table's hash key
-    type = "S"    # TODO: S, N or B -- must match the live table
-  }
+resource "aws_cloudtrail" "org-audit-trail" {
+  name                       = "org-audit-trail"
+  enable_log_file_validation = true
+  s3_bucket_name             = "TODO" # TODO: set to the trail's existing log bucket
 }
 ```
 
 A stub is the only way to emit configuration that validates before you complete it — `tofu validate`
 rejects both a missing required argument and `null`. **Applying with the placeholders still in place
 would reconfigure the resource incorrectly.** They are not cosmetic.
+
+**And there are exactly two of them, where there used to be seven.** Every stub is now checked
+against the provider's own schema (`awsremgen verify`, its HCL axis), which found that five of the
+seven — `aws_dynamodb_table`'s `hash_key` and its whole `attribute` block, and `aws_db_instance`'s
+`engine`, `allocated_storage` and `username` — are `optional` in the schema, even though the provider
+*documentation* describes them as required. Docs describe what *creating* a resource needs; the schema
+describes what the parser demands.
+
+On a resource adopted by `import`, that distinction is the difference between a no-op and data loss:
+**omitting an optional argument means "keep the live value", while `hash_key = "TODO"` means "set it
+to the literal string `TODO`"** — and `hash_key` forces replacement, so applying that stub destroys
+and recreates the table. `tofu validate` accepts both files identically. That is why a false "the
+provider requires this" claim is a defect rather than a harmless extra line, and why
+`aws_dynamodb_table` in this sample now carries no placeholders at all:
+
+```hcl
+resource "aws_dynamodb_table" "checkout-sessions" {
+  name                        = "checkout-sessions"
+  deletion_protection_enabled = true
+}
+```
 
 ### What safety looks like in the artifact
 
@@ -184,6 +207,10 @@ The committed sample was checked with real tools rather than substring assertion
 - The account guard was exercised against a stub `aws` reporting a different account: exit `1`, zero
   mutating calls.
 - Regenerating produces byte-identical files apart from the timestamp.
+- Every recipe behind these artifacts passes `awsremgen verify` on all three axes: the AWS service
+  models, the provider schema, and the CLI's own flag surface. `validate` passing is necessary and not
+  sufficient — it accepts a `TODO` stub that would replace a live resource, which is what the schema
+  axis exists to catch.
 
 ## What this sample cannot tell you
 

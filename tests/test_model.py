@@ -23,6 +23,7 @@ from remgen.core.model import (
     collapse_whitespace,
     to_hcl_label,
     validate_identifier,
+    validate_path_segment,
 )
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,100 @@ def test_validate_identifier_rejects_non_strings():
             validate_identifier(value, field_name="resource_id")
 
 
+# ---------------------------------------------------------------------------
+# Path segments: the values that become filenames
+#
+# `validate_identifier` permits '/', which it must -- S3 keys and Azure resource
+# IDs contain them. But `OutputUnit.filename` interpolates account_id and region
+# into a filename, so for those two the identifier rule is not the right rule.
+# It was the rule, and the gap was exploitable: see the test below.
+# ---------------------------------------------------------------------------
+
+#: Values that must never be accepted where the value becomes a path component.
+#: The first four are traversal; the rest are separators or shapes that would
+#: make a filename mean something other than it reads as.
+UNSAFE_PATH_SEGMENTS = [
+    "1/../../../../tmp/pwned",
+    "..",
+    "1/..",
+    "../sibling",
+    "a/b",
+    "/absolute",
+    "trailing/",
+    "has.dot",
+    "-leading-dash",
+    "",
+    "x" * 129,
+]
+
+
+@pytest.mark.parametrize("value", UNSAFE_PATH_SEGMENTS)
+def test_values_that_become_filenames_reject_separators_and_traversal(value):
+    with pytest.raises(UnsafeIdentifierError):
+        validate_path_segment(value, field_name="account_id")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "111111111111",  # AWS account id
+        "00000000-0000-0000-0000-000000000000",  # Azure subscription id
+        "us-east-1",  # AWS region
+        "eastus",  # Azure location
+        "my_scope-1",
+    ],
+)
+def test_every_real_cloud_scope_and_region_is_a_valid_path_segment(value):
+    # The stricter rule has to reject malformed input without constraining any
+    # real cloud's vocabulary -- otherwise it is not a fix, it is an outage.
+    assert validate_path_segment(value, field_name="account_id") == value
+
+
+def test_a_hostile_account_id_cannot_write_outside_the_output_directory(tmp_path):
+    """Regression: this exact input wrote two artifacts outside ``--out``.
+
+    ``account_id`` arrives from the findings export and is interpolated into
+    ``OutputUnit.filename``. Under ``validate_identifier`` alone -- which permits
+    ``/`` -- an ``account_id`` of ``1/../../../../tmp/trav/target/PWNED`` produced
+    ``aws/remediate-aws-1/../../../../tmp/.../PWNED-us-east-1.tf``, and both the
+    ``.sh`` and the ``.tf`` were written to the traversal target while ``--out``
+    held only ``README.md`` and ``manifest.json``. Confirmed by running the real
+    CLI, not by reasoning about the regex.
+
+    Asserted at the ``Finding`` boundary because that is where the untrusted
+    value enters: rejecting it there means no generator, layout rule or future
+    output format has to remember the hazard. ``cmd_generate`` also re-checks
+    every resolved path before writing, so this is defence in depth rather than
+    a single gate.
+    """
+    outside = tmp_path / "target"
+    outside.mkdir()
+    with pytest.raises(UnsafeIdentifierError) as exc:
+        Finding(
+            policy_id="284b1210-a31e-48ce-97af-f4d825ef132d",
+            resource_id="mybucket",
+            region="us-east-1",
+            account_id=f"1/../../../..{outside}/PWNED",
+        )
+    # The message has to name the field and say why, or the next person to see it
+    # will assume a legitimate id was rejected and loosen the rule.
+    assert "account_id" in str(exc.value)
+    assert not list(outside.iterdir()), "nothing may have been written"
+
+
+def test_a_hostile_region_is_rejected_too():
+    # region is the other component interpolated into the filename. Tested
+    # separately because a fix applied to only one of the two would leave the
+    # vulnerability reachable while this file looked like it covered it.
+    with pytest.raises(UnsafeIdentifierError):
+        Finding(
+            policy_id="284b1210-a31e-48ce-97af-f4d825ef132d",
+            resource_id="mybucket",
+            region="../../etc",
+            account_id="111111111111",
+        )
+
+
 def test_finding_validates_every_field():
     with pytest.raises(UnsafeIdentifierError):
         Finding(policy_id="p", resource_id="ok", region="us-east-1; evil", account_id="1")
@@ -120,10 +215,43 @@ def test_finding_validates_every_field():
         ("UPPER", "upper"),
         ("a..b", "a_b"),
         ("...", "resource"),
+        # Path-shaped ids (every Azure resource ID) reduce to the last segment.
+        # Folding the whole thing gave a 131-character label whose only
+        # distinguishing part was at the very end.
+        (
+            "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg"
+            "/providers/Microsoft.Storage/storageAccounts/mystorageacct",
+            "mystorageacct",
+        ),
+        ("/subscriptions/x/resourceGroups/rg/", "rg"),
+        ("/", "resource"),
     ],
 )
 def test_to_hcl_label(value, expected):
     assert to_hcl_label(value) == expected
+
+
+def test_shortening_path_shaped_labels_cannot_change_an_aws_label():
+    """The shortening branch must be unreachable for AWS-shaped identifiers.
+
+    This is the property that makes the change safe to land in shared code: a
+    leading ``/`` was rejected by ``validate_identifier`` before path-shaped ids
+    were permitted, so nothing that was previously *valid* can take the new
+    branch. Asserted rather than argued, because "no AWS output changed" is
+    exactly the claim a reviewer cannot check by reading.
+    """
+    aws_shapes = [
+        "my-bucket",
+        "arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail",
+        "GameScores",
+        "key/with/slashes",
+        "1234abcd-12ab-34cd-56ef-1234567890ab",
+    ]
+    for value in aws_shapes:
+        assert not value.startswith("/"), f"{value!r} would take the new branch"
+        # Folding directly is what the old implementation did; the result must
+        # be identical for every one of these.
+        assert to_hcl_label(value) == to_hcl_label(value.lstrip("/"))
 
 
 def test_hcl_labels_are_valid_hcl_identifiers():
@@ -283,6 +411,32 @@ def test_commitment_downgrades_to_caution(overrides):
 )
 def test_availability_risk_downgrades_to_disruptive(overrides):
     assert _recipe(**overrides).safety_tier is SafetyTier.DISRUPTIVE
+
+
+def test_rank_orders_the_tiers_from_least_to_most_risky():
+    """``rank`` is the one ordering of the tiers, and two callers rely on it.
+
+    The CLI sorts remediations and the withheld-count breakdown by it, so a reader
+    meets the safe changes first; the HCL generator uses it to file a merged block
+    under the riskiest of its contributors' tiers. An inverted or flattened ordering
+    puts a ``caution`` change under a ``SAFEST`` banner, which is the single thing the
+    tiering exists to prevent -- and it would not fail any assertion about *which*
+    tier a recipe derives, because the derivation is unaffected.
+
+    Asserted on the ordering rather than on the literal numbers: the values are an
+    implementation detail, being strictly increasing is the contract.
+    """
+    tiers = [SafetyTier.SAFEST, SafetyTier.CAUTION, SafetyTier.DISRUPTIVE]
+    ranks = [t.rank for t in tiers]
+    assert ranks == sorted(ranks), f"tiers are not ordered least-to-most risky: {ranks}"
+    assert len(set(ranks)) == len(tiers), (
+        f"two tiers share a rank, so `max` between them is arbitrary: {ranks}"
+    )
+    # Every member, so adding a tier without a rank fails here rather than at runtime
+    # on the one merged block that happens to carry it.
+    assert set(tiers) == set(SafetyTier), "a SafetyTier member is missing from this test"
+    assert max(tiers, key=lambda t: t.rank) is SafetyTier.DISRUPTIVE
+    assert min(tiers, key=lambda t: t.rank) is SafetyTier.SAFEST
 
 
 def test_disruptive_wins_over_caution():

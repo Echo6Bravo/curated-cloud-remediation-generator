@@ -30,6 +30,34 @@ jobs:
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: 1.12.5
+      - name: Restore the AWS provider plugin cache
+        # The suite validates generated HCL with a real parser, which means every run
+        # fetches the AWS provider: a 147 MB zip that unpacks to ~663 MB, downloaded
+        # once per `tofu init`. The test fixtures already share one plugin cache across
+        # every workspace in a session (tests/conftest.py::tofu_plugin_cache) -- this is
+        # the half that carries it between runs.
+        #
+        # A stale cache is safe, which was verified rather than assumed: with only an
+        # older 5.x present, `init` under a `~> 5.0` constraint still resolves and
+        # fetches 5.100.0 rather than silently pinning what happens to be cached. So
+        # the cache cannot quietly validate against an old provider.
+        #
+        # A *corrupt* cache is also safe, and this is the property that matters most for
+        # a gate: a truncated cached package makes `init` fail with "does not match the
+        # content of the downloaded package", not pass. The cache can cost a red build;
+        # it cannot manufacture a green one. If that ever happens, bump `-v1-` below to
+        # abandon the poisoned entry.
+        #
+        # Keyed on the files that declare the provider constraint, so raising it saves a
+        # fresh entry instead of reusing one that no longer satisfies it. `restore-keys`
+        # still restores the previous entry first, so an unrelated edit to conftest.py
+        # costs a re-save, not a re-download.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/remgen-test-tofu-plugins
+          key: tofu-plugins-${{ runner.os }}-${{ runner.arch }}-v1-${{ hashFiles('tests/conftest.py') }}
+          restore-keys: |
+            tofu-plugins-${{ runner.os }}-${{ runner.arch }}-v1-
       - name: Install
         run: pip install -e '.[dev]'
       - name: Install botocore for real-service-model verification
@@ -39,15 +67,33 @@ jobs:
         # the one that catches a recipe written from a stale memory of the API.
         run: pip install botocore
       - name: Confirm the skipif-gated tests will actually RUN, not skip
-        # Two suites are skipif-gated on external things being present, and both are the
-        # strongest gates here: real-parser validation of generated HCL (needs tofu) and
-        # recipe-vs-real-AWS-model verification (needs service models). A silent skip turns
-        # either into a no-op while CI still reports green, so assert their preconditions.
+        # Several suites are skipif-gated on external things being present, and they are the
+        # strongest gates here: real-parser validation of generated HCL and of the provider
+        # schema (needs tofu, for both clouds), recipe-vs-real-AWS-model verification (needs
+        # service models), recipe-vs-real-CLI-flag verification (needs the AWS CLI's
+        # ac.index), and the Azure equivalents of the last two (the azure.mgmt SDKs bundled
+        # in `az`, and `az` itself). A silent skip turns any of them into a no-op while CI
+        # still reports green, so assert their preconditions. One gate per external
+        # dependency, each naming what stops being checked, because "something skipped" is
+        # not actionable.
         run: |
-          command -v tofu >/dev/null || { echo "::error::tofu missing; HCL validation tests would silently skip"; exit 1; }
+          command -v tofu >/dev/null || { echo "::error::tofu missing; HCL validation and provider-schema tests would silently skip, for both clouds"; exit 1; }
           tofu version
           python -c "import sys; sys.path.insert(0,'src'); from remgen.providers.aws import drift; d=drift.find_model_dir(); print('service models:', d); sys.exit(0 if d else 1)" \
             || { echo "::error::no AWS service models found; recipe-vs-API test would silently skip"; exit 1; }
+          python -c "import sys; sys.path.insert(0,'src'); from remgen.providers.aws.cli_surface import find_ac_index; p=find_ac_index(); print('ac.index:', p); sys.exit(0 if p else 1)" \
+            || { echo "::error::no AWS CLI autocomplete index found; recipe-vs-CLI-flag tests would silently skip"; exit 1; }
+          command -v az >/dev/null || { echo "::error::az missing; Azure's CLI-surface tests would silently skip"; exit 1; }
+          az version --output tsv || true
+          # This is the gate that caught a real resolution bug rather than a missing tool,
+          # so its message points at the resolver rather than telling you to install a CLI
+          # that is already there. The runner's preinstalled `az` is `/usr/bin/az`, a bash
+          # *wrapper* rather than a symlink, with its SDKs under `/opt/az` -- below none of
+          # the launcher's parents, so globbing upward found nothing while Homebrew, pip
+          # and the MSI all worked. Every Azure test skipped here while the canary, which
+          # pip-installs into site-packages, stayed green. See `_search_roots`.
+          python -c "import sys; sys.path.insert(0,'src'); from remgen.providers.azure.drift import find_sdk_dir; d=find_sdk_dir(); print('azure.mgmt SDKs:', d); sys.exit(0 if d else 1)" \
+            || { echo "::error::no bundled azure.mgmt SDK packages found next to $(command -v az); recipe-vs-Azure-API tests would silently skip. az IS installed, so this is most likely find_sdk_dir failing to resolve this install layout, not a missing dependency -- see _SDK_GLOBS and _search_roots in remgen/providers/azure/drift.py"; exit 1; }
       - name: Test suite
         # No -k narrowing, no -x. The tests you did not expect to be affected are the point.
         # -rs surfaces skip reasons; --strict-markers keeps a typo'd marker from silently
@@ -66,6 +112,43 @@ jobs:
             exit 1
           fi
           echo "no tests skipped"
+      - name: Every declared console script is actually installed and runnable
+        # The test suite imports `main` directly, so it proves the code works and proves
+        # nothing about the `[project.scripts]` entry point that users actually invoke. A
+        # typo'd module path there installs a command that raises ImportError on first run
+        # with a fully green suite behind it. This runs each command as a command.
+        #
+        # Discovered rather than listed here: a hardcoded list would have to be edited by
+        # the same commit that adds a cloud, which is the edit that gets forgotten -- and
+        # forgetting it exempts the new command from the only check of it.
+        #
+        # Read from the INSTALLED distribution's metadata, not by parsing pyproject.toml.
+        # Two reasons, and the first is the substantive one: the entry points that exist
+        # after `pip install` are what this step is about, and a declaration that never
+        # became one is exactly the failure being hunted -- parsing the source would
+        # report a command that is not there as present. The second is that `tomllib` is
+        # stdlib only from 3.11, so on the 3.10 leg of this matrix the parse raised
+        # ModuleNotFoundError and failed the job for a reason unrelated to the code.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/scripts.txt
+          from importlib.metadata import distribution
+          eps = distribution("remgen").entry_points
+          names = sorted(e.name for e in eps if e.group == "console_scripts")
+          assert len(names) >= 2, f"expected a command per cloud, found {names}"
+          print("\n".join(names))
+          PY
+          while read -r cmd; do
+            echo "--- $cmd --version"
+            "$cmd" --version
+            echo "--- $cmd recipes"
+            "$cmd" recipes > /dev/null
+            # A command must name itself in its own help. `azremgen` reaching the shared
+            # parser with AWS's provider bound would pass every check above.
+            "$cmd" --help | grep -q -- "$cmd" \
+              || { echo "::error::$cmd --help does not name $cmd"; exit 1; }
+          done < /tmp/scripts.txt
+          echo "all console scripts run: $(tr '\n' ' ' < /tmp/scripts.txt)"
 
   sample:
     name: Committed sample is current
@@ -78,22 +161,88 @@ jobs:
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: 1.12.5
+      - name: Restore the provider plugin cache
+        # This job runs `tofu init` once per committed `.tf` artifact -- five now, three
+        # AWS and two Azure -- and without a shared cache each one downloads its
+        # provider again. See the
+        # `test` job's copy of this step for why a stale or corrupt cache cannot turn
+        # this gate green.
+        #
+        # A separate key prefix from the `test` job, deliberately. The two declare
+        # different constraints -- the fixtures use `~> 5.0` and the provider block
+        # written below uses `>= 5.0`, which now resolve to different majors (5.100.0 and
+        # 6.58.0) since the AWS provider released 6.x. Sharing one key would have the two
+        # jobs alternately evicting each other's entry, so each keeps its own. That the
+        # two jobs check two majors is extra coverage rather than a defect: the schema
+        # facts this tool relies on were confirmed under both (`aws_dynamodb_table`
+        # validates with no `hash_key`; `aws_db_instance` still requires
+        # `instance_class`). Keyed on the file that declares the constraint, not on this
+        # workflow, so an unrelated CI edit does not throw away 147 MB. The azurerm
+        # constraint is `~> 5.0` in both this job and the fixtures, so only the AWS
+        # provider is checked at two majors -- deliberately, because only AWS has a 6.x to
+        # check and the two confirmed facts above are about AWS resources.
+        #
+        # One cache entry holds both clouds' providers, keyed on both declaration files:
+        # a plugin cache directory is provider-addressed, so the two cannot collide, and
+        # two entries would double the restore for no gain. Editing either constraint
+        # misses the key and re-downloads both, which is the correct trade -- a stale
+        # azurerm plugin paired with a fresh constraint is exactly the state that makes a
+        # schema check report on a provider nobody asked for.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/remgen-test-tofu-plugins
+          key: tofu-plugins-sample-${{ runner.os }}-${{ runner.arch }}-v2-${{ hashFiles('.github/provider-check.tf', '.github/provider-check.azure.tf') }}
+          restore-keys: |
+            tofu-plugins-sample-${{ runner.os }}-${{ runner.arch }}-v2-
+      - name: Share one plugin cache across this job's five workspaces
+        # Set at job scope rather than per step: the artifact loop below creates a fresh
+        # workspace per `.tf` file, so without this each pays the full download. The test
+        # suite gets the same value from its own fixture; this job does not run pytest.
+        run: echo "TF_PLUGIN_CACHE_DIR=$HOME/.cache/remgen-test-tofu-plugins" >> "$GITHUB_ENV"
+      - run: mkdir -p ~/.cache/remgen-test-tofu-plugins
       - run: pip install -e '.[dev]'
-      - name: Install botocore so the run is not degraded
+      - name: Install botocore so the AWS run is not degraded
         # Without service models, `generate` prints an extra "could not be verified"
         # warning and the transcript legitimately differs. Installing them keeps the
         # comparison meaningful instead of forcing the check to tolerate two shapes.
         run: pip install botocore
+      - name: Require az so the Azure run is not degraded
+        # The same concern, one cloud over, and the fix is a check rather than an install
+        # because the runner image already ships `az`. Measured, not assumed: with `az`
+        # absent the Azure artifacts are byte-identical but the transcript gains
+        # "Warning: 4 recipe(s) could not be verified against the Azure service model" --
+        # so the diff would fail on a degraded run and the message would point at the
+        # sample rather than at the missing CLI. This step makes that failure name its
+        # real cause.
+        #
+        # Asserting rather than installing is also the honest reading of what this job
+        # tests: `pip install --upgrade azure-cli` here would make every run of this gate
+        # depend on whatever azure-cli released that morning, which is the drift canary's
+        # job and is deliberately unpinned *there* so it can open an issue instead of
+        # reddening an unrelated PR.
+        run: |
+          set -euo pipefail
+          command -v az >/dev/null 2>&1 || {
+            echo "::error::az is not on PATH. The Azure sample transcript is generated with"
+            echo "::error::the API axis able to run; without az it degrades and the diff below"
+            echo "::error::fails for that reason rather than for drift. The runner image used"
+            echo "::error::to ship az -- if that changed, install it here."
+            exit 1
+          }
+          az version --output tsv | head -1
       - name: Regenerate the sample and diff it against what is committed
         # examples/ is documentation that claims to be real output. Unlike prose, that
         # claim is mechanically checkable, so it is checked -- a sample that silently
         # describes an older version is worse than no sample, because a reader has no
         # way to tell. Only the timestamp is normalized; everything else must match
         # byte for byte, which also proves output stays deterministic.
+        #
+        # Both clouds, through one loop rather than a copied block. The committed Azure
+        # sample is not decoration: its input carries a record whose ARM id names a
+        # different subscription than its accountId, and the *only* mechanical proof that
+        # such a record is still refused is that the committed transcript still says so.
         run: |
           set -euo pipefail
-          awsremgen generate --findings examples/findings.sample.json \
-            --out ./artifacts --safety-level caution -v > /tmp/sample-run.txt 2>&1
           # The generation timestamp is the only legitimate difference between two runs,
           # and it appears in four distinct forms: the .sh/.tf header, the manifest
           # field, the artifact README's prose line, and the console summary. Missing
@@ -101,73 +250,130 @@ jobs:
           norm() {
             sed -E 's/(# Generated: |"generated_at": "|v[0-9][0-9.]* on |-- generated )[0-9T:+-]+/\1TIMESTAMP/' "$1"
           }
-          # Compared by path relative to the output root, not by basename: artifacts now
-          # live in a per-cloud subdirectory, and two clouds may legitimately produce the
-          # same filename under different directories. Matching on basename would compare
-          # the wrong pair and report a false match.
+          # Compared by path relative to the output root, not by basename: artifacts live
+          # in a per-cloud subdirectory, and two clouds may legitimately produce the same
+          # filename under different directories. Matching on basename would compare the
+          # wrong pair and report a false match.
           rel() { ( cd "$1" && find . -type f | sed 's|^\./||' | sort ); }
           fail=0
-          for name in $(rel examples/sample-output); do
-            fresh="artifacts/$name"
-            if [ ! -f "$fresh" ]; then
-              echo "::error::the run no longer produces $name, but it is committed under examples/sample-output/"
+          # command | findings | committed output dir | committed transcript | extra flags
+          #
+          # `--out ./artifacts` for both, and it is load-bearing rather than tidiness: the
+          # transcript echoes the --out path it was given, so a different directory here
+          # would diff against the committed transcript and fail for a reason that is not
+          # drift. The two runs therefore cannot share one output directory, and each
+          # clears it first.
+          #
+          # --safety-level differs by cloud and that is the recipe sets talking: 4 of 5
+          # AWS recipes are `caution`, so the default level would emit one remediation and
+          # exercise almost nothing, while all 4 Azure recipes are `safest` and the
+          # default already covers every one. Passing `caution` to Azure would test the
+          # flag rather than the tool, and would silently start meaning something else the
+          # day a `caution` Azure recipe lands.
+          while IFS='|' read -r command findings committed transcript flags; do
+            rm -rf ./artifacts
+            # shellcheck disable=SC2086
+            # $flags is deliberately word-split: it is either empty or a flag pair.
+            "$command" generate --findings "$findings" \
+              --out ./artifacts $flags -v > /tmp/fresh-run.txt 2>&1
+            for name in $(rel "$committed"); do
+              fresh="artifacts/$name"
+              if [ ! -f "$fresh" ]; then
+                echo "::error::$command no longer produces $name, but it is committed under $committed/"
+                fail=1
+                continue
+              fi
+              if ! diff -u <(norm "$committed/$name") <(norm "$fresh"); then
+                echo "::error::$committed/$name is stale. Regenerate it (see examples/README.md)."
+                fail=1
+              fi
+            done
+            for name in $(rel artifacts); do
+              if [ ! -f "$committed/$name" ]; then
+                echo "::error::$command now produces $name, which is not committed under $committed/"
+                fail=1
+              fi
+            done
+            if ! diff -u <(norm "$transcript") <(norm /tmp/fresh-run.txt); then
+              echo "::error::$transcript no longer matches the real console output of $command."
               fail=1
-              continue
             fi
-            if ! diff -u <(norm "examples/sample-output/$name") <(norm "$fresh"); then
-              echo "::error::examples/sample-output/$name is stale. Regenerate it (see examples/README.md)."
-              fail=1
-            fi
-          done
-          for name in $(rel artifacts); do
-            if [ ! -f "examples/sample-output/$name" ]; then
-              echo "::error::the run now produces $name, which is not committed under examples/sample-output/"
-              fail=1
-            fi
-          done
-          if ! diff -u <(norm examples/sample-run.txt) <(norm /tmp/sample-run.txt); then
-            echo "::error::examples/sample-run.txt no longer matches the real console output."
-            fail=1
-          fi
+          done <<'CLOUDS'
+          awsremgen|examples/findings.sample.json|examples/sample-output|examples/sample-run.txt|--safety-level caution
+          azremgen|examples/findings.azure.sample.json|examples/sample-output-azure|examples/sample-run.azure.txt|
+          CLOUDS
           [ "$fail" -eq 0 ] || exit 1
-          echo "committed sample matches a fresh run"
-      - name: The committed sample really parses
+          echo "both committed samples match a fresh run"
+      - name: The Azure sample still refuses the cross-subscription record
+        # The committed transcript proves this by *containing* the rejection, which the
+        # diff above already enforces. This step asserts it by name anyway, because that
+        # diff would also pass if someone regenerated the sample after the guard broke --
+        # the transcript would change, they would commit the change, and green would mean
+        # "the sample is current" rather than "the record is still refused".
+        run: |
+          set -euo pipefail
+          transcript="examples/sample-run.azure.txt"
+          grep -q "scope conflicts:  1" "$transcript" || {
+            echo "::error::$transcript no longer reports a scope conflict. Either the"
+            echo "::error::cross-subscription guard regressed, or the sample input lost"
+            echo "::error::the record that exercises it."
+            exit 1
+          }
+          grep -q "resource_id names subscription 99999999" "$transcript" || {
+            echo "::error::$transcript no longer names the conflicting subscription"
+            exit 1
+          }
+          # And the mutation must appear nowhere in the artifacts. This is the actual
+          # security property; the counts above are how it is reported.
+          if grep -rl "99999999-9999-9999-9999-999999999999" examples/sample-output-azure/; then
+            echo "::error::a committed Azure artifact targets the wrong subscription"
+            exit 1
+          fi
+          echo "the cross-subscription record is refused and appears in no artifact"
+      - name: The committed samples really parse
         # The sample is the first thing a reader trusts, so it gets the same real-parser
         # treatment as generated output in the test suite. A substring check would pass
         # on a file that reads correctly and does not parse.
+        #
+        # Each cloud is parsed against ITS OWN provider file. Not interchangeable, and the
+        # failure if they were swapped is quiet rather than loud: an `azurerm_storage_account`
+        # block in an AWS-only workspace fails `init` on a missing provider, but the
+        # reverse -- a workspace declaring both -- would validate resources against
+        # whichever provider claims the type and download 300 MB extra per workspace to do
+        # it. One cloud, one provider, one workspace.
         run: |
           set -euo pipefail
-          # Found recursively: artifacts sit under a per-cloud directory. A glob that no
-          # longer matches would make this job pass having checked nothing, so the counts
-          # below are asserted rather than assumed.
-          mapfile -t shells < <(find examples/sample-output -name '*.sh' | sort)
-          mapfile -t tfs < <(find examples/sample-output -name '*.tf' | sort)
-          [ "${#shells[@]}" -gt 0 ] || { echo "::error::no .sh artifacts found to check"; exit 1; }
-          [ "${#tfs[@]}" -gt 0 ] || { echo "::error::no .tf artifacts found to check"; exit 1; }
-          for f in "${shells[@]}"; do bash -n "$f"; done
           i=0
-          for f in "${tfs[@]}"; do
-            work="/tmp/tfcheck$i"; i=$((i+1))
-            mkdir -p "$work"; cp "$f" "$work/main.tf"
-            cat > "$work/provider.tf" <<'EOF'
-          terraform {
-            required_providers {
-              aws = {
-                source  = "hashicorp/aws"
-                version = ">= 5.0"
-              }
-            }
-          }
-
-          provider "aws" {
-            region = "us-east-1"
-          }
-          EOF
-            ( cd "$work" && tofu fmt -check -no-color main.tf \
-                && tofu init -no-color -backend=false >/dev/null \
-                && tofu validate -no-color )
-          done
-          echo "sample artifacts parse and are canonically formatted"
+          fail=0
+          # committed dir | provider declaration for that cloud
+          while IFS='|' read -r committed provider_tf; do
+            # Found recursively: artifacts sit under a per-cloud directory. A glob that no
+            # longer matches would make this job pass having checked nothing, so the
+            # counts below are asserted rather than assumed.
+            mapfile -t shells < <(find "$committed" -name '*.sh' | sort)
+            mapfile -t tfs < <(find "$committed" -name '*.tf' | sort)
+            [ "${#shells[@]}" -gt 0 ] || { echo "::error::no .sh artifacts found under $committed"; fail=1; }
+            [ "${#tfs[@]}" -gt 0 ] || { echo "::error::no .tf artifacts found under $committed"; fail=1; }
+            for f in "${shells[@]}"; do bash -n "$f"; done
+            # The provider block comes from a committed file rather than a heredoc, so the
+            # constraint has one home and the plugin cache above can be keyed on it. Its
+            # presence is asserted: a missing file would leave every workspace without a
+            # provider and `init` would fail with something less specific than this.
+            test -f "$provider_tf" || { echo "::error::$provider_tf is missing; $committed cannot be parsed against a provider"; exit 1; }
+            for f in "${tfs[@]}"; do
+              work="/tmp/tfcheck$i"; i=$((i+1))
+              mkdir -p "$work"; cp "$f" "$work/main.tf"
+              cp "$provider_tf" "$work/provider.tf"
+              ( cd "$work" && tofu fmt -check -no-color main.tf \
+                  && tofu init -no-color -backend=false >/dev/null \
+                  && tofu validate -no-color )
+            done
+          done <<'PARSE'
+          examples/sample-output|.github/provider-check.tf
+          examples/sample-output-azure|.github/provider-check.azure.tf
+          PARSE
+          [ "$fail" -eq 0 ] || exit 1
+          echo "sample artifacts for both clouds parse and are canonically formatted"
       - name: The sample's account guard still refuses the wrong account
         # The examples/README.md claims this, so the claim is executed rather than
         # asserted. A stub `aws` reports a different account and logs any mutating
@@ -175,6 +381,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/fakebin
+          # shellcheck disable=SC2016
+          # The single quotes are the point: `$1` and `$*` must expand when the stub is
+          # invoked by the generated script, not when printf writes the stub out.
           printf '%s\n' '#!/usr/bin/env bash' \
             'if [ "$1" = "sts" ]; then echo 999999999999; exit 0; fi' \
             'echo "MUTATION: aws $*" >> /tmp/fakebin/calls.log' \
@@ -199,6 +408,56 @@ jobs:
             exit 1
           fi
           echo "account guard refuses the wrong account and issues no mutating calls"
+      - name: The Azure sample's subscription guard still refuses an unreachable subscription
+        # The Azure analogue of the step above, and the mismatch it stages is a different
+        # one on purpose. An AWS script refuses when the caller's account is not the
+        # script's account. An Azure login spans subscriptions, so "wrong active
+        # subscription" is not an error here -- the script says so and proceeds, because
+        # every command names `--subscription` explicitly. What it must refuse is a
+        # subscription the credentials cannot reach *at all*, which is the case this stub
+        # stages: `account list` reports the target absent.
+        #
+        # The stub is written BEFORE anything runs and answers only read-only `account`
+        # verbs. Everything else is recorded as a mutation and the log must stay empty --
+        # that emptiness, not the exit code, is the property being checked. An exit-1 that
+        # got there after issuing one `storage account update` would be a failure this
+        # step must catch.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fakeaz
+          # shellcheck disable=SC2016
+          # Single-quoted for the same reason as the aws stub above: `$1`, `$2` and `$*`
+          # belong to the stub's own runtime.
+          printf '%s\n' '#!/usr/bin/env bash' \
+            '# Read-only account verbs answer; anything else is a mutation and is logged.' \
+            'if [ "$1" = "account" ]; then' \
+            '  case "$2" in' \
+            '    show) echo 11111111-1111-1111-1111-111111111111; exit 0 ;;' \
+            '    list) echo 0; exit 0 ;;' \
+            '  esac' \
+            'fi' \
+            'echo "MUTATION: az $*" >> /tmp/fakeaz/calls.log' \
+            'exit 0' > /tmp/fakeaz/az
+          chmod +x /tmp/fakeaz/az
+          : > /tmp/fakeaz/calls.log
+          mapfile -t shells < <(find examples/sample-output-azure -name '*.sh' | sort)
+          [ "${#shells[@]}" -gt 0 ] || { echo "::error::no Azure .sh artifacts found; the guard check ran on nothing"; exit 1; }
+          for f in "${shells[@]}"; do
+            set +e
+            PATH=/tmp/fakeaz:$PATH bash "$f" >/dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "::error::$f ran to completion against an UNREACHABLE subscription; the guard did not fire"
+              exit 1
+            fi
+          done
+          if [ -s /tmp/fakeaz/calls.log ]; then
+            echo "::error::mutating az calls were issued despite an unreachable subscription:"
+            cat /tmp/fakeaz/calls.log
+            exit 1
+          fi
+          echo "subscription guard refuses an unreachable subscription and issues no mutating calls"
 
   canary-liveness:
     name: Drift canary is still scheduled
@@ -226,8 +485,23 @@ jobs:
         run: |
           set -euo pipefail
           wf=".github/workflows/drift-canary.yml"
-          test -f "$wf" || { echo "::error::$wf is gone; nothing watches for upstream AWS API drift"; exit 1; }
+          test -f "$wf" || { echo "::error::$wf is gone; nothing watches for upstream cloud API drift"; exit 1; }
           grep -q 'schedule:' "$wf" || { echo "::error::$wf no longer has a schedule trigger; it only runs when a human remembers"; exit 1; }
+
+          # Both per-cloud jobs are named, not just the file. The Actions API reports one
+          # `state` for the whole workflow, so it cannot tell that one of two jobs was
+          # deleted -- and a file that still exists, still has a schedule and is still
+          # `active` while silently watching one cloud is precisely the
+          # indistinguishable-from-passing state this job exists to rule out. Grepped
+          # rather than parsed because CI has no YAML parser installed and adding a
+          # dependency to a liveness check is the wrong trade.
+          for job in upstream-drift azure-drift; do
+            grep -qE "^  $job:" "$wf" || {
+              echo "::error::$wf no longer defines the '$job' job. One cloud's recipes are"
+              echo "::error::unwatched between commits while the workflow still looks active."
+              exit 1
+            }
+          done
 
           # `|| true` on the fetch, then an explicit emptiness check: a failed API call
           # must not be reported as a live canary, and `set -e` alone would exit with a
@@ -298,17 +572,25 @@ jobs:
                     # depth -- naming the sample directory that would have committed
                     # nothing while every doc still pointed at it.
                     "examples/README.md", "examples/findings.sample.json",
-                    "examples/sample-run.txt"):
+                    "examples/sample-run.txt",
+                    # The Azure sample, checked to the same standard rather than as an
+                    # afterthought: README.md links README.azure.md as the place the
+                    # Azure-specific behaviour is explained, and nothing else explains
+                    # it. Its input fixture is named too, because the cross-subscription
+                    # record inside it is what a dedicated CI step asserts on.
+                    "examples/README.azure.md", "examples/findings.azure.sample.json",
+                    "examples/sample-run.azure.txt"):
               if not pathlib.Path(f).exists():
                   errs.append(f"missing required file: {f}")
-          sample = pathlib.Path("examples/sample-output")
-          # rglob, not glob: artifacts live under a per-cloud directory now. A
-          # non-recursive check would have reported this directory as empty.
-          if not any(sample.rglob("*.sh")) or not any(sample.rglob("*.tf")):
-              errs.append("examples/sample-output/ must contain committed .sh and .tf artifacts")
-          for companion in ("README.md", "manifest.json"):
-              if not (sample / companion).exists():
-                  errs.append(f"examples/sample-output/ is missing {companion}")
+          # Both samples, one loop. rglob, not glob: artifacts live under a per-cloud
+          # directory, and a non-recursive check would report either directory as empty.
+          for sample_dir in ("examples/sample-output", "examples/sample-output-azure"):
+              sample = pathlib.Path(sample_dir)
+              if not any(sample.rglob("*.sh")) or not any(sample.rglob("*.tf")):
+                  errs.append(f"{sample_dir}/ must contain committed .sh and .tf artifacts")
+              for companion in ("README.md", "manifest.json"):
+                  if not (sample / companion).exists():
+                      errs.append(f"{sample_dir}/ is missing {companion}")
           # 2. Relative markdown links in the docs must resolve, including from
           #    examples/ -- where the links are '../SECURITY.md' and so only resolve
           #    when checked relative to the linking document.
@@ -326,10 +608,54 @@ jobs:
           #    scraped from the prose: a restructure renames the module *and* the mention
           #    of it, and a scraper would follow the docs into agreeing with themselves.
           for src_path in ("src/remgen/core/sources.py",
-                           "src/remgen/providers/aws/recipes/curated.py",
+                           "src/remgen/providers/aws/recipes/__init__.py",
                            "src/remgen/core/generators/__init__.py",
                            "src/remgen/core/provider.py",
-                           "src/remgen/providers/aws/__init__.py"):
+                           "src/remgen/providers/aws/__init__.py",
+                           # CONTRIBUTING.md and ROADMAP.md both name this file when
+                           # explaining why the suite and the sample gate check
+                           # different provider majors. The sample job also fails
+                           # without it, but that failure says "the sample cannot be
+                           # parsed", not "the docs now point at nothing".
+                           ".github/provider-check.tf",
+                           # The Azure equivalent, named by CONTRIBUTING.md and by
+                           # examples/README.azure.md as the provider the committed
+                           # Azure sample is validated against. Its absence fails the
+                           # sample job too, but with "the sample cannot be parsed"
+                           # rather than "a doc points at nothing".
+                           ".github/provider-check.azure.tf",
+                           # Test files the docs send readers to by name, as the
+                           # evidence for a claim rather than as an aside: README.md
+                           # and CONTRIBUTING.md cite test_structure.py for the
+                           # no-cross-provider-import rule, and CONTRIBUTING.md tells
+                           # a contributor who wants to "fix" the Azure guard to read
+                           # test_azure_shell.py first. A renamed test file leaves
+                           # that instruction pointing at nothing, and the suite still
+                           # passes -- pytest does not care what a doc calls a file.
+                           "tests/test_structure.py",
+                           "tests/test_azure_shell.py",
+                           "src/remgen/providers/azure/shell.py",
+                           # README.md links this module as the evidence that Azure's
+                           # CLI axis is real, and CONTRIBUTING.md sends anyone adding
+                           # a cloud's CLI axis here to read why two candidate sources
+                           # were rejected -- a reason that exists nowhere else. Its
+                           # test is cited for the never-invoke-a-mutating-command
+                           # property, which is the one a reader is most likely to
+                           # want proof of before trusting the axis.
+                           "src/remgen/providers/azure/cli_surface.py",
+                           "tests/test_azure_cli_surface.py",
+                           # CONTRIBUTING.md's "Adding an Azure recipe" section sends a
+                           # recipe author to the recipes package for the four findings
+                           # that constrain what an Azure recipe can be, and to the HCL
+                           # test for the weaker-scope-guard property. README.md cites
+                           # the same package as where the two dropped recipes are
+                           # explained. Those are reasons that exist nowhere else, so a
+                           # rename leaves the instruction pointing at nothing while the
+                           # suite stays green.
+                           "src/remgen/providers/azure/recipes/__init__.py",
+                           "tests/test_azure_hcl.py",
+                           "tests/test_azure_recipe_set.py",
+                           "tests/test_azure_drift.py"):
               if not pathlib.Path(src_path).exists():
                   errs.append(f"docs reference missing path: {src_path}")
           if errs:
@@ -348,29 +674,60 @@ jobs:
         with:
           python-version: "3.13"
       - name: Recipe count and safety-level split are not stale
-        # The README states a recipe count and a per-level split. Those are exactly the kind of
-        # number that silently rots the next time a recipe is added, turning documentation into
-        # a confident false claim.
+        # The README states a recipe count and a per-level split, per cloud. Those are exactly
+        # the kind of number that silently rots the next time a recipe is added, turning
+        # documentation into a confident false claim.
         run: |
           python3 - <<'PY'
           import pathlib, re, sys
           sys.path.insert(0, "src")
           from collections import Counter
-          from remgen.providers.aws.recipes.curated import RECIPES
-          tiers = Counter(str(getattr(r.safety_tier, "value", r.safety_tier)) for r in RECIPES)
-          readme = pathlib.Path("README.md").read_text()
+          # The aggregate per cloud, not one service module: recipes live in per-service
+          # files now, so importing a single module would count a subset and report the
+          # README as wrong (or, worse, as right) about a number it does not describe.
+          # The same argument runs across clouds -- a single total would let an added
+          # Azure recipe make a stale AWS count look correct -- so each cloud is counted
+          # and checked separately, and a cloud missing from the README is an error
+          # rather than an absence nobody notices.
+          from remgen.providers.aws.recipes import all_recipes as aws_recipes
+          from remgen.providers.azure.recipes import all_recipes as azure_recipes
+          SETS = {"AWS": aws_recipes(), "Azure": azure_recipes()}
+          TIERS = {cloud: Counter(str(getattr(r.safety_tier, "value", r.safety_tier)) for r in recipes)
+                   for cloud, recipes in SETS.items()}
+          COUNTS = {cloud: len(recipes) for cloud, recipes in SETS.items()}
+          # Collapsed, because every claim below is a sentence the formatter is free to
+          # wrap. Matching raw text would fail on a reflow that changed no claim at all,
+          # and a check that cries wolf gets deleted rather than fixed.
+          readme = re.sub(r"\s+", " ", pathlib.Path("README.md").read_text())
           errs = []
-          n = len(RECIPES)
-          if f"ships **{n} recipes**" not in readme:
-              errs.append(f"README does not state the real recipe count ({n})")
-          if f"Of the {n} shipped recipes" not in readme:
-              errs.append(f"README summary line does not state {n} recipes")
-          for tier, count in tiers.items():
-              if f"**{count} is `{tier}`**" not in readme and f"**{count} are `{tier}`**" not in readme:
-                  errs.append(f"README does not state {count} recipe(s) at tier '{tier}'")
+          counted = " and ".join(f"**{COUNTS[c]} recipes** for {c}" for c in ("AWS", "Azure"))
+          if f"ships {counted}" not in readme:
+              errs.append(f"README 'Curated' paragraph does not state: ships {counted}")
+          limits = " and ".join(f"{COUNTS[c]} {c} policies" for c in ("AWS", "Azure"))
+          if f"Coverage is {limits}" not in readme:
+              errs.append(f"README limitations bullet does not state: Coverage is {limits}")
+          # Each tier split is checked only inside its own cloud's sentence. A bare
+          # substring search would let AWS's split be satisfied by Azure's sentence
+          # whenever the two clouds share a number -- which is the case today: AWS has
+          # 4 `caution` and Azure has 4 `safest`.
+          marks = [(m.start(), m.group(2), int(m.group(1)))
+                   for m in re.finditer(r"Of the (\d+) shipped (AWS|Azure) recipes", readme)]
+          found = {cloud for _, cloud, _ in marks}
+          for cloud in COUNTS:
+              if cloud not in found:
+                  errs.append(f"README has no tier-split sentence for {cloud}")
+          bounds = [start for start, _, _ in marks] + [len(readme)]
+          for index, (start, cloud, stated) in enumerate(marks):
+              if stated != COUNTS[cloud]:
+                  errs.append(f"README tier-split sentence says {stated} {cloud} recipes, code has {COUNTS[cloud]}")
+              segment = readme[start:bounds[index + 1]]
+              for tier, count in TIERS[cloud].items():
+                  if f"**{count} is `{tier}`**" not in segment and f"**{count} are `{tier}`**" not in segment:
+                      errs.append(f"README does not state {count} {cloud} recipe(s) at tier '{tier}'")
           if errs:
               print("README claim check FAILED:")
               for e in errs: print("  -", e)
               sys.exit(1)
-          print(f"README claims match: {n} recipes, tiers {dict(tiers)}")
+          print("README claims match: " + "; ".join(
+              f"{cloud} {COUNTS[cloud]} recipes, tiers {dict(TIERS[cloud])}" for cloud in SETS))
           PY
