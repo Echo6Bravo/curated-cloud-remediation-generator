@@ -176,9 +176,13 @@ statement of its surface. That means it needs `az` installed rather than a bundl
 that a missing `az` is reported as could-not-check rather than as a pass. Which `az` answered is
 printed on the `Flag source:` line, so a drift report can be reproduced.
 
-**A check that could not run is never reported as a pass.** A missing axis exits `4`, which the
-weekly [drift canary](./.github/workflows/drift-canary.yml) treats as worse than red: a red run names
-a fix, a blind one reports nothing. No axis is entirely free of setup, and what each needs differs by
+**A check that could not run is never reported as a pass.** An axis whose inputs are missing prints
+`not checked` and never a pass line. Where it was *asked* for and could not run — an unusable schema
+path, absent service models, no CLI surface — it exits `4`, which the weekly
+[drift canary](./.github/workflows/drift-canary.yml) treats as worse than red: a red run names a fix,
+a blind one reports nothing. The one case that is exit-code-neutral is a bare `verify` with no
+`--provider-schema`, because requiring a 19 MB artifact would make the default invocation fail; there
+the printed `not checked` is what carries the signal, so read the section rather than the exit code. No axis is entirely free of setup, and what each needs differs by
 cloud: AWS's API axis reads a data file its CLI already bundles, Azure's two need `az` itself present,
 and **both** clouds' HCL axis needs a schema you generate, because producing one downloads the
 provider and this tool does not shell out:
@@ -469,7 +473,9 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 - **`verify`'s HCL axis needs a schema you generate.** Producing one downloads the provider, and a
   tool that emits commands against production should not shell out to something that fetches
   hundreds of megabytes from a registry, so it takes a file rather than running `tofu`. Without one
-  the axis reports "not run" (exit `4`) — never a pass.
+  the axis prints `not checked` and never a pass line — but `verify` still exits `0`, because failing
+  by default would make the flagless invocation unusable. The `Schema source:` line, not the exit
+  code, is what tells you the HCL half was checked.
 - **Your account can still reject a valid command** (SCPs, permission boundaries, resource state).
   The generated scripts fail fast and loudly when that happens rather than continuing.
 

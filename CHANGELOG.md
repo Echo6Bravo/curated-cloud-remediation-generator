@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.1] — 2026-08-07
+
+A documentation and verification release: no generator behaviour changed, and the only diff in either
+committed sample is the version string and timestamps. What it fixes is a class of defect this project
+had no coverage for at all — **documents that make checkable claims about the code, and were not
+checked.** Two of the three fixes below were found by pointing an instrument at that surface for the
+first time; the third was found by reading the four policies a rejection covered instead of trusting
+the category name they shared.
+
 ### Fixed
 - **`SECURITY.md` told researchers a whole cloud's scope guards were out of scope.** It named only
   AWS's `sts get-caller-identity` preflight and `allowed_account_ids` under the highest-severity
@@ -17,6 +28,16 @@ All notable changes to this project are documented here. The format follows
   is to tell someone what to report, and this one excluded the guard most worth attacking. The
   wrong-scope bullet now lists each cloud's guards separately, because the escape routes differ —
   AWS has no identifier that embeds an account, so it needs no `scope_conflict` analogue.
+- **Three documents told contributors that a green `verify` proved the HCL axis had run, when it
+  proves the opposite.** `CONTRIBUTING.md`, `README.md` and `ROADMAP.md` all stated that `verify`
+  without `--provider-schema` exits `4`. It exits `0` — deliberately, with a comment in
+  `core/cli.py` explaining that requiring a 19 MB artifact would make the default invocation fail,
+  and pinned by `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass`. So the code was
+  right and the prose was wrong, in the one direction that matters: the printed `? not checked`
+  exists specifically to stop a reader taking a clean run as "both halves checked", and the
+  documentation undid it. The docs now say the `Schema source:` line rather than the exit status is
+  the evidence, and reserve exit `4` for a check that was *requested* and could not run — an unusable
+  schema path, absent service models, a missing CLI surface.
 
 ### Added
 - **CI now fails if `SECURITY.md` does not name every implemented cloud's scope guards.** The stale
@@ -33,6 +54,52 @@ All notable changes to this project are documented here. The format follows
   a tuple-unpacking traceback.
 - `src/remgen/providers/azure/__init__.py` added to the `docs-refs` path list, since `SECURITY.md`
   now sends a researcher there to find the cross-subscription guard.
+- **`AWS_POLICY_TRIAGE.md` — every AWS-only policy in the catalogue, assigned to exactly one of four
+  buckets** (shipped, write-a-recipe-now, blocked on a named prerequisite, documented rejection),
+  with a prioritised service-batched recipe list and time estimates. `ROADMAP.md` previously answered
+  "why does this policy have no recipe" for exactly three policies — VPC flow logs, Key Vault RBAC,
+  SQL Server min-TLS — leaving the rest to be rediscovered one afternoon at a time. The headline is
+  the **design ceiling: 61 of 237 policies (26%)**. The remaining 176 fall into eight rejection
+  classes, so the register is eight arguments rather than one judgement per policy, and overturning a
+  class reconsiders all its members together. It also records what it does *not* cover: the 17
+  `Custom`, 28 `KubernetesAdmissionController` and 38 uncategorised policies that GraphQL omits, and
+  why UDM (1063/427) and GraphQL (739/344) disagree — GraphQL is used because it is the only source
+  that yields policy *names*, `RiskPolicyTitle` being a `CommonVirtual` property.
+- **CI now cross-checks that register against the shipped recipes.** Two of its claims rot on the
+  ordinary course of work, both silently: the shipped table goes stale the moment a recipe batch
+  lands, and an overturned rejection leaves the document arguing against code that exists. The gate
+  checks that the buckets partition the catalogue with no id in two of them, that the summary counts
+  match the rows actually present, that the shipped table *equals* the recipe set in both directions,
+  and that nothing shipped is also rejected. Measured on five failure cases before being trusted: a
+  duplicated id, a landed recipe whose row was not moved, a stale summary count, a renamed section
+  heading, and a document with every row deleted — that last one because zero rows is the shape in
+  which this check passes vacuously. It deliberately does **not** check whether an assignment is
+  *correct*; that is a judgement about an external API surface no job here can reach.
+- **`tests/test_contributing_procedure.py` — the procedure docs are now tested against the tool.**
+  `CONTRIBUTING.md` is executable instructions in prose: it names test functions as the enforcement
+  for a rule, tells you which flags to run, and cites exit codes as evidence a check happened. None of
+  that was checked by anything, which is how the exit-`4` error above survived three releases. Twelve
+  cases now assert that every test function a doc cites exists (a renamed test otherwise leaves the
+  sentence pointing at nothing while the suite stays green), that every flag a doc puts in a command
+  block appears in that subcommand's `--help`, that the flagless `verify` behaves as documented — run,
+  not read — and that `CONTRIBUTING.md` still points recipe authors at the register. Each was
+  mutation-tested rather than trusted for passing: a renamed cited test, the real defective exit-`4`
+  sentence reintroduced verbatim, a renamed `--safety-level`, a dropped register reference, and
+  `verify` changed to fail without a schema. All five fail, each naming the document to edit.
+
+### Changed
+- **`CONTRIBUTING.md` now starts a recipe author at the triage register.** It said to take the policy
+  UUID "from the live Tenable Cloud Security catalog", which since this release leads to a red build:
+  the new `claims` gate requires the register row to move into *Shipped* in the same commit. A
+  procedure doc that walks a contributor into a gate it never mentions is a defect in the doc, so
+  *Adding a recipe* now names the register, says the row moves, and says that overturning a rejection
+  means editing the class's reasoning rather than arguing one policy.
+- **One triage assignment was corrected during the pass, and it is recorded rather than quietly
+  fixed.** The four AWS-only `Kubernetes`-category policies were first rejected wholesale as
+  in-cluster concerns — on the strength of the *category name*. Three are ordinary EKS control-plane
+  calls (public node IPs, a public Kubernetes API endpoint, image scanning) and one needs a CMK, so
+  all four are now assigned individually and the out-of-design-scope class no longer exists.
+  Rejecting by category rather than by policy is the mistake the register exists to make visible.
 
 ## [0.2.0] — 2026-08-07
 
