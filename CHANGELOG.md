@@ -28,6 +28,16 @@ the category name they shared.
   is to tell someone what to report, and this one excluded the guard most worth attacking. The
   wrong-scope bullet now lists each cloud's guards separately, because the escape routes differ —
   AWS has no identifier that embeds an account, so it needs no `scope_conflict` analogue.
+- **Three documents told contributors that a green `verify` proved the HCL axis had run, when it
+  proves the opposite.** `CONTRIBUTING.md`, `README.md` and `ROADMAP.md` all stated that `verify`
+  without `--provider-schema` exits `4`. It exits `0` — deliberately, with a comment in
+  `core/cli.py` explaining that requiring a 19 MB artifact would make the default invocation fail,
+  and pinned by `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass`. So the code was
+  right and the prose was wrong, in the one direction that matters: the printed `? not checked`
+  exists specifically to stop a reader taking a clean run as "both halves checked", and the
+  documentation undid it. The docs now say the `Schema source:` line rather than the exit status is
+  the evidence, and reserve exit `4` for a check that was *requested* and could not run — an unusable
+  schema path, absent service models, a missing CLI surface.
 
 ### Added
 - **CI now fails if `SECURITY.md` does not name every implemented cloud's scope guards.** The stale
@@ -76,18 +86,6 @@ the category name they shared.
   mutation-tested rather than trusted for passing: a renamed cited test, the real defective exit-`4`
   sentence reintroduced verbatim, a renamed `--safety-level`, a dropped register reference, and
   `verify` changed to fail without a schema. All five fail, each naming the document to edit.
-
-### Fixed
-- **Three documents told contributors that a green `verify` proved the HCL axis had run, when it
-  proves the opposite.** `CONTRIBUTING.md`, `README.md` and `ROADMAP.md` all stated that `verify`
-  without `--provider-schema` exits `4`. It exits `0` — deliberately, with a comment in
-  `core/cli.py` explaining that requiring a 19 MB artifact would make the default invocation fail,
-  and pinned by `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass`. So the code was
-  right and the prose was wrong, in the one direction that matters: the printed `? not checked`
-  exists specifically to stop a reader taking a clean run as "both halves checked", and the
-  documentation undid it. The docs now say the `Schema source:` line rather than the exit status is
-  the evidence, and reserve exit `4` for a check that was *requested* and could not run — an unusable
-  schema path, absent service models, a missing CLI surface.
 
 ### Changed
 - **`CONTRIBUTING.md` now starts a recipe author at the triage register.** It said to take the policy
