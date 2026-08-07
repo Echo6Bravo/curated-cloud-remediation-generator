@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.1] — 2026-08-07
+
+A documentation and verification release: no generator behaviour changed, and the only diff in either
+committed sample is the version string and timestamps. What it fixes is a class of defect this project
+had no coverage for at all — **documents that make checkable claims about the code, and were not
+checked.** Two of the three fixes below were found by pointing an instrument at that surface for the
+first time; the third was found by reading the four policies a rejection covered instead of trusting
+the category name they shared.
+
 ### Fixed
 - **`SECURITY.md` told researchers a whole cloud's scope guards were out of scope.** It named only
   AWS's `sts get-caller-identity` preflight and `allowed_account_ids` under the highest-severity
