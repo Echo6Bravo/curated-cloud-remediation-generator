@@ -1,5 +1,5 @@
 
-awsremgen 0.1.0 -- generated 2026-08-06T12:28:26+00:00
+awsremgen 0.2.0 -- generated 2026-08-07T16:57:07+00:00
 
   Records read:         10
     usable findings:    8

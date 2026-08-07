@@ -1,5 +1,5 @@
 
-azremgen 0.1.0 -- generated 2026-08-07T13:11:14+00:00
+azremgen 0.2.0 -- generated 2026-08-07T16:57:08+00:00
 
   Records read:         10
     usable findings:    7

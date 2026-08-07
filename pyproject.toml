@@ -9,7 +9,14 @@ build-backend = "setuptools.build_meta"
 # `awsremgen`; three names for three different things, as with
 # kubernetes/k8s/kubectl.
 name = "remgen"
-version = "0.1.0"
+# Read from `remgen.__version__` rather than written here, so the version has one
+# source of truth. It was written in both places, with nothing checking they
+# agreed -- and the copy that stamps every generated artifact header is the one in
+# the package, so the pair drifting would have made `pip show remgen` disagree
+# with the artifacts it produced, silently and in the direction least likely to be
+# noticed. `dynamic` is setuptools reading the module's assignment, not an import:
+# `remgen/__init__.py` must therefore keep `__version__` a plain string literal.
+dynamic = ["version"]
 description = "Generates review-ready vendor-CLI and OpenTofu/Terraform remediation artifacts for a curated subset of Tenable Cloud Security cloud policies."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,6 +68,9 @@ Issues = "https://github.com/Echo6Bravo/curated-cloud-remediation-generator/issu
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "remgen.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

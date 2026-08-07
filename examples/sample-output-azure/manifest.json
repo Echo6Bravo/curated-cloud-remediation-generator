@@ -1,7 +1,7 @@
 {
   "generator": "azremgen (curated-cloud-remediation-generator)",
-  "version": "0.1.0",
-  "generated_at": "2026-08-07T13:11:14+00:00",
+  "version": "0.2.0",
+  "generated_at": "2026-08-07T16:57:08+00:00",
   "applied": false,
   "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
   "clouds": [
