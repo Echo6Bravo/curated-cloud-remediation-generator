@@ -197,12 +197,19 @@ def _interpreter_token(script: str) -> str | None:
     The shebang line is skipped. It names the shell that runs the wrapper (or, for
     ``/opt/az/bin/az``, a *build-machine* path that does not exist on the installed
     system), never the interpreter the CLI actually runs under.
+
+    Tokens containing ``=`` are skipped as environment assignments. Both shipped
+    wrappers put one before the interpreter (``AZ_INSTALLER=HOMEBREW``, ``=DEB``), and
+    neither *value* looks like a Python path -- but one that did would be returned in
+    preference to the real interpreter, and the real one would then never be searched.
     """
     for line in script.splitlines():
         if line.startswith("#!") or not line.strip():
             continue
         for token in line.split():
             bare = token.replace('"', "").replace("'", "")
+            if "=" in bare:
+                continue
             if bare and _PYTHON_TOKEN_RE.search(bare):
                 return bare
     return None

@@ -666,6 +666,38 @@ def test_the_shebang_is_not_mistaken_for_the_interpreter(tmp_path, monkeypatch):
     assert find_sdk_dir() == sdk
 
 
+def test_an_env_assignment_is_not_mistaken_for_the_interpreter(tmp_path, monkeypatch):
+    """``VAR=/path/to/python3`` is a variable being set, not the interpreter.
+
+    Both shipped wrappers put an assignment before the interpreter -- Homebrew's
+    ``AZ_INSTALLER=HOMEBREW``, Debian's ``AZ_INSTALLER=DEB`` -- and neither *value*
+    happens to look like a Python path. One that did would be returned in preference to
+    the real interpreter, which would then never be searched.
+
+    No shipped wrapper does this today, and it fails safe if it ever did: a path that
+    resolves to nothing means the axis reports UNAVAILABLE rather than a false pass. It
+    is tested because a latent wrong answer in resolution is what the bug this file
+    documents already was once.
+    """
+    root = tmp_path / "assignment"
+    sdk = root / "opt/az/lib/python3.14/site-packages/azure/mgmt"
+    sdk.mkdir(parents=True)
+    bin_dir = root / "usr/bin"
+    bin_dir.mkdir(parents=True)
+    az = bin_dir / "az"
+    az.write_text(
+        "#!/usr/bin/env bash\n"
+        'PYTHONHOME=/nonexistent/decoy/python3 "$bin_dir"/../../opt/az/bin/python3'
+        ' -Im azure.cli "$@"\n',
+        encoding="utf-8",
+    )
+    az.chmod(0o755)
+    monkeypatch.delenv(MODELS_ENV_VAR, raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    find_sdk_dir.cache_clear()
+    assert find_sdk_dir() == sdk
+
+
 def test_no_az_on_path_and_no_override_is_not_found(tmp_path, monkeypatch):
     monkeypatch.delenv(MODELS_ENV_VAR, raising=False)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
