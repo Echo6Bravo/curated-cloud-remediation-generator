@@ -264,6 +264,55 @@ def test_each_triage_register_shipped_table_matches_its_recipes(provider) -> Non
     )
 
 
+def test_every_markdown_anchor_link_resolves_to_a_real_heading() -> None:
+    """A `](#...)` link must name a heading that exists in the target document.
+
+    Written because the registers link *into each other's rejection classes* and those
+    anchors embed the class size -- `#r10-not-addressable-by-resource-id-24`. That is a
+    useful link and a rotting one: moving a single policy out of R10 renames the heading
+    to `-23` and the link lands at the top of the file instead, silently. The reader gets
+    a document rather than the argument they were sent to read, and nothing goes red.
+
+    The `docs-refs` CI job checks that referenced *files* exist; it cannot see fragments.
+    Anchors are slugged the way GitHub does it -- lowercased, punctuation dropped, spaces
+    to hyphens -- which is close enough to catch a renamed or resized heading, the failure
+    this exists for.
+    """
+    registers = sorted(REPO.glob("*_POLICY_TRIAGE.md"))
+    assert registers, "no triage registers found; this check would pass vacuously"
+    docs = [*DOCS, *registers]
+
+    def slug(heading: str) -> str:
+        s = re.sub(r"[^\w\s-]", "", heading.lower())
+        return re.sub(r"\s+", "-", s.strip())
+
+    headings = {
+        doc.name: {slug(m) for m in re.findall(r"^#+ (.+)$", doc.read_text(encoding="utf-8"), re.M)}
+        for doc in docs
+    }
+    broken, checked = [], 0
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8")
+        # Same-document links, then links naming another file plus a fragment.
+        for anchor in re.findall(r"\]\(#([\w-]+)\)", text):
+            checked += 1
+            if anchor not in headings[doc.name]:
+                broken.append(f"{doc.name} -> #{anchor}")
+        for target, anchor in re.findall(r"\]\(\.?/?([\w.]+\.md)#([\w-]+)\)", text):
+            checked += 1
+            if target not in headings:
+                broken.append(f"{doc.name} -> {target}#{anchor} (target not checked here)")
+            elif anchor not in headings[target]:
+                broken.append(f"{doc.name} -> {target}#{anchor}")
+    assert checked, "no anchor links found at all; this check would pass vacuously"
+    assert not broken, (
+        f"link(s) point at a heading that does not exist: {broken}. A rejection-class "
+        f"anchor embeds the class size, so moving one policy renames the heading and the "
+        f"link silently lands at the top of the file -- the reader gets a document "
+        f"instead of the argument they were sent to read."
+    )
+
+
 def test_contributing_gives_azure_authors_the_ids_check_before_they_write() -> None:
     """The Azure procedure must front-load the `--ids` check, not bury it.
 
