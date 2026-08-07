@@ -24,8 +24,12 @@ fixtures *and* against the real bundled SDKs.
   the override at it. They assert the parsing and status rules, and they are the only
   way to reach the failure branches -- the real SDKs contain no missing operation.
 * **Layout tests** build a fake ``az`` installation and assert :func:`find_sdk_dir`
-  locates the packages inside it. These cover :data:`_SDK_GLOBS`, which is otherwise
-  only ever exercised by whatever ``az`` the developer happens to have.
+  locates the packages inside it. These cover :data:`_SDK_GLOBS` and
+  :func:`~remgen.providers.azure.drift._search_roots`, which are otherwise only ever
+  exercised by whatever ``az`` the developer happens to have. That gap was not
+  hypothetical: the layout GitHub's runners preinstall resolved to nothing while
+  Homebrew, pip and the MSI all worked, so every Azure test skipped in CI. There is a
+  test per layout now, including that one.
 * **Integration tests** run against the real bundled SDKs and skip when there are none.
   They are what tells us the fixtures resemble Azure; a fixture test alone only tells us
   the parser agrees with a file we wrote from what we already believed.
@@ -531,7 +535,7 @@ def test_model_source_description_names_the_directory_when_there_is_one(fake_sdk
     [
         ("libexec/lib/python3.13/site-packages/azure/mgmt", "Homebrew: az is a bash wrapper"),
         ("lib/python3.13/site-packages/azure/mgmt", "pip install into a virtualenv"),
-        ("lib/azure-cli/lib/python3.11/site-packages/azure/mgmt", "the MSI/deb package layout"),
+        ("lib/azure-cli/lib/python3.11/site-packages/azure/mgmt", "the MSI package layout"),
     ],
 )
 def test_the_sdk_directory_is_found_in_each_real_installation_layout(
@@ -556,6 +560,110 @@ def test_the_sdk_directory_is_found_in_each_real_installation_layout(
     monkeypatch.setenv("PATH", str(bin_dir))
     find_sdk_dir.cache_clear()
     assert find_sdk_dir() == root / layout, why
+
+
+def test_the_sdks_are_found_when_they_are_not_under_the_launcher_at_all(tmp_path, monkeypatch):
+    """The layout GitHub's runners ship, which no glob alone can reach.
+
+    Reproduces the Debian package byte-for-byte in shape: ``/usr/bin/az`` is a *bash
+    wrapper rather than a symlink*, so ``realpath`` stops there and the launcher's
+    parents are ``usr/bin``, ``usr``, and the root. The packages are at
+    ``opt/az/lib/python3*/site-packages/azure/mgmt`` -- below **none** of them.
+
+    This is the regression test for a real CI failure: every Azure test was skipped on
+    `ubuntu-latest` with "no bundled azure.mgmt SDK packages found", while the same
+    recipes verified green locally on Homebrew and green in the canary, which
+    ``pip install``s into ``site-packages`` and so happened to sit under the launcher.
+    Three configurations agreed and the fourth -- the default install on the most
+    common CI runner -- found nothing.
+
+    Adding a fourth glob cannot fix it, and asserting that is the point of this test:
+    the tree is not under the launcher, so no pattern rooted at the launcher matches.
+    The wrapper is read for the interpreter it names instead.
+    """
+    root = tmp_path / "debian"
+    sdk = root / "opt/az/lib/python3.14/site-packages/azure/mgmt"
+    sdk.mkdir(parents=True)
+    interpreter = root / "opt/az/bin/python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("", encoding="utf-8")
+    bin_dir = root / "usr/bin"
+    bin_dir.mkdir(parents=True)
+    az = bin_dir / "az"
+    # The real wrapper, verbatim from azure-cli_2.88.0-1~noble_amd64.deb. The quotes
+    # sit *inside* the path, which is what defeated the first regex written for this.
+    az.write_text(
+        "#!/usr/bin/env bash\n"
+        'bin_dir=`cd "$(dirname "$BASH_SOURCE[0]")"; pwd`\n'
+        'AZ_INSTALLER=DEB "$bin_dir"/../../opt/az/bin/python3 -Im azure.cli "$@"\n',
+        encoding="utf-8",
+    )
+    az.chmod(0o755)
+    monkeypatch.delenv(MODELS_ENV_VAR, raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    find_sdk_dir.cache_clear()
+
+    assert find_sdk_dir() == sdk
+
+    # The tree really is unreachable from the launcher, so this test cannot pass by
+    # accident through the glob path it is meant to bypass.
+    # `list(...)`, not the generator `parent.glob(pattern)` -- a generator is truthy
+    # whether or not it will yield anything, so `any(parent.glob(p) for ...)` is
+    # vacuously True and asserts nothing. Written the wrong way first; it failed here
+    # rather than passing silently only because the expected answer is "no matches".
+    assert not [
+        match
+        for parent in list(az.parents)[:6]
+        for pattern in drift._SDK_GLOBS
+        for match in parent.glob(pattern)
+    ]
+
+
+def test_a_launcher_that_names_no_interpreter_still_falls_back_to_the_globs(tmp_path, monkeypatch):
+    """Reading the wrapper is additive, never a replacement.
+
+    A launcher this code cannot parse -- a native binary, or a wrapper shape nobody has
+    shipped yet -- must leave the glob search exactly as it was, or supporting a new
+    layout would have cost the ones already working.
+    """
+    root = tmp_path / "opaque"
+    layout = "lib/python3.13/site-packages/azure/mgmt"
+    (root / layout).mkdir(parents=True)
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    az = bin_dir / "az"
+    az.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64)
+    az.chmod(0o755)
+    monkeypatch.delenv(MODELS_ENV_VAR, raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    find_sdk_dir.cache_clear()
+    assert find_sdk_dir() == root / layout
+
+
+def test_the_shebang_is_not_mistaken_for_the_interpreter(tmp_path, monkeypatch):
+    """A shebang names the shell, or a path that does not exist here.
+
+    ``/opt/az/bin/az`` inside the real package begins ``#!/mnt/repo/python_env/bin/
+    python3`` -- a *build machine* path absent from every installed system. Trusting a
+    shebang would search a directory tree that is not there and, worse, would do it in
+    preference to the wrapper line that names the real interpreter.
+    """
+    root = tmp_path / "shebang"
+    sdk = root / "opt/az/lib/python3.14/site-packages/azure/mgmt"
+    sdk.mkdir(parents=True)
+    bin_dir = root / "usr/bin"
+    bin_dir.mkdir(parents=True)
+    az = bin_dir / "az"
+    az.write_text(
+        "#!/mnt/repo/python_env/bin/python3\n"
+        'AZ_INSTALLER=DEB "$bin_dir"/../../opt/az/bin/python3 -Im azure.cli "$@"\n',
+        encoding="utf-8",
+    )
+    az.chmod(0o755)
+    monkeypatch.delenv(MODELS_ENV_VAR, raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    find_sdk_dir.cache_clear()
+    assert find_sdk_dir() == sdk
 
 
 def test_no_az_on_path_and_no_override_is_not_found(tmp_path, monkeypatch):

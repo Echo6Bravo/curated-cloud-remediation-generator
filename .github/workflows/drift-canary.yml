@@ -452,12 +452,22 @@ jobs:
         # The Azure counterpart of the AWS job's `ac.index` check, and it covers both axes
         # in one step because both depend on the same install.
         #
-        # `find_sdk_dir()` searches three glob shapes -- Homebrew's `libexec/lib/python3*`,
-        # pip's `lib/python3*`, and the MSI's `lib/azure-cli/lib/python3*`. A pip install
-        # on a runner should match the second, but "should" is why this step exists: if
-        # none matches, `verify` reports exit 4 and the canary is blind, and a maintainer
-        # reading a red run deserves to be told which of the two lookups failed rather
-        # than working it out from the word "unavailable".
+        # `find_sdk_dir()` globs three shapes -- Homebrew's `libexec/lib/python3*`, pip's
+        # and Debian's `lib/python3*`, and the MSI's `lib/azure-cli/lib/python3*` -- from
+        # the launcher's parents AND from the parents of the interpreter a wrapper `az`
+        # names. This job's `pip install` should match the second glob from the first
+        # root, but "should" is why this step exists: if none matches, `verify` reports
+        # exit 4 and the canary is blind, and a maintainer reading a red run deserves to
+        # be told which of the two lookups failed rather than working it out from the
+        # word "unavailable".
+        #
+        # This job is also NOT the configuration that catches a resolution bug, which is
+        # worth stating so its green is not over-read. `pip install` puts the SDKs in
+        # site-packages under the launcher, so it matched even when the `ubuntu-latest`
+        # *preinstalled* `az` did not: that one installs `/usr/bin/az` as a bash wrapper
+        # whose SDKs live in `/opt/az`, under none of the launcher's parents. This job
+        # passed green while every Azure test in `ci.yml` skipped. `ci.yml`'s own
+        # skipif-preflight is what covers that layout.
         #
         # The directory is checked for CONTENT, not just existence, and that is the one
         # thing here that is not a mirror of the AWS step. Measured: a directory that
@@ -478,9 +488,9 @@ jobs:
           sdk = find_sdk_dir()
           if sdk is None:
               print("::error::no bundled azure.mgmt.* SDK directory found. The API-drift "
-                    "signal cannot run and `verify` will report exit 4. _SDK_GLOBS in "
-                    "remgen.providers.azure.drift lists the three layouts it looks for; "
-                    "a pip-installed azure-cli should match the pip one.")
+                    "signal cannot run and `verify` will report exit 4. See "
+                    "`_SDK_GLOBS` and `_search_roots` in remgen.providers.azure.drift; "
+                    "a pip-installed azure-cli should match the pip layout.")
               failed = True
           else:
               services = sorted(p.name for p in sdk.iterdir() if p.is_dir())
