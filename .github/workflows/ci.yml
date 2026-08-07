@@ -659,7 +659,12 @@ jobs:
                            "src/remgen/providers/azure/recipes/__init__.py",
                            "tests/test_azure_hcl.py",
                            "tests/test_azure_recipe_set.py",
-                           "tests/test_azure_drift.py"):
+                           "tests/test_azure_drift.py",
+                           # SECURITY.md names this module as where the cross-subscription
+                           # scope guard lives, so a researcher deciding whether a finding
+                           # is in scope is sent here. A rename leaves the highest-severity
+                           # bullet in the security policy pointing at nothing.
+                           "src/remgen/providers/azure/__init__.py"):
               if not pathlib.Path(src_path).exists():
                   errs.append(f"docs reference missing path: {src_path}")
           if errs:
@@ -734,6 +739,70 @@ jobs:
               sys.exit(1)
           print("README claims match: " + "; ".join(
               f"{cloud} {COUNTS[cloud]} recipes, tiers {dict(TIERS[cloud])}" for cloud in SETS))
+          PY
+      - name: SECURITY.md scope covers every implemented cloud
+        # SECURITY.md tells a researcher which scope guards are in scope, and that list is
+        # what a second cloud silently invalidates. It did: `azremgen` shipped four verified
+        # recipes and a cross-subscription guard while SECURITY.md still named only AWS's
+        # preflight and listed Azure among the clouds that are "unimplemented, not silently
+        # broken" -- and examples/README.azure.md links here as the explanation of the Azure
+        # boundary. That is worse than a stale count. It tells someone hunting the
+        # highest-severity class in this tool that a whole cloud's guards are out of scope,
+        # and the guard it omitted is the one that closed a real cross-subscription escape.
+        #
+        # Providers are discovered, not listed: a hardcoded list would have to be edited by
+        # the same commit that adds a cloud, which is precisely the edit that was forgotten
+        # here. A cloud with a descriptor but no recipes is skipped -- it genuinely is
+        # unimplemented, and the out-of-scope sentence is then correct about it.
+        run: |
+          python3 - <<'PY'
+          import importlib, pathlib, pkgutil, re, sys
+          sys.path.insert(0, "src")
+          import remgen.providers
+          from remgen.core.provider import Provider
+          implemented = []
+          for _finder, name, ispkg in pkgutil.iter_modules(remgen.providers.__path__):
+              if not ispkg:
+                  continue
+              module = importlib.import_module(f"remgen.providers.{name}")
+              for value in vars(module).values():
+                  # A descriptor that reaches no recipes is a directory, not support, so it
+                  # belongs in the out-of-scope sentence rather than the in-scope list.
+                  if isinstance(value, Provider) and value.all_recipes():
+                      implemented.append(value)
+          if not implemented:
+              print("::error::no implemented provider discovered; this check would pass vacuously")
+              sys.exit(1)
+          security = re.sub(r"\s+", " ", pathlib.Path("SECURITY.md").read_text())
+          # The in/out-of-scope split is what makes "named in the right section" meaningful,
+          # so a renamed heading must say that rather than raise a traceback about tuple
+          # unpacking -- the reader of a red log has to know which file to edit.
+          if security.count("**Out of scope:**") != 1:
+              print("::error::SECURITY.md has no single '**Out of scope:**' heading; this check"
+                    " splits in-scope from out-of-scope on it and cannot tell which section a"
+                    " cloud is named in without it")
+              sys.exit(1)
+          in_scope, out_of_scope = security.split("**Out of scope:**", 1)
+          errs = []
+          for provider in implemented:
+              # Named in the wrong-scope bullet list, which is where a researcher looks for
+              # what counts. Matching the display name anywhere in the file would be
+              # satisfied by an out-of-scope mention, which is the bug being checked for.
+              # Em dash or hyphen, as in the release gate: an editor's autocorrect flipping
+              # one for the other must not be able to turn this check off.
+              if not re.search(rf"\*\*{re.escape(provider.display_name)}\*\* *[—-]", in_scope):
+                  errs.append(f"SECURITY.md's wrong-scope section does not name {provider.display_name};"
+                              f" it ships {len(provider.all_recipes())} recipes, so its scope guards"
+                              " are in scope and a researcher is being told otherwise")
+              if re.search(rf"\b{re.escape(provider.display_name)}\b[^.]*unimplemented", out_of_scope):
+                  errs.append(f"SECURITY.md calls {provider.display_name} unimplemented, but it ships"
+                              f" {len(provider.all_recipes())} recipes")
+          if errs:
+              print("SECURITY.md scope check FAILED:")
+              for e in errs: print("  -", e)
+              sys.exit(1)
+          print("SECURITY.md names the scope guards of every implemented cloud: "
+                + ", ".join(f"{p.display_name} ({len(p.all_recipes())} recipes)" for p in implemented))
           PY
 
   release-consistency:
