@@ -6,7 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **`SECURITY.md` told researchers a whole cloud's scope guards were out of scope.** It named only
+  AWS's `sts get-caller-identity` preflight and `allowed_account_ids` under the highest-severity
+  finding class, and listed Azure among the clouds that are "unimplemented, not silently broken" —
+  while `azremgen` shipped four verified recipes, a subscription reachability preflight, and the
+  `scope_conflict` check that closed a real cross-subscription escape. `examples/README.azure.md`
+  links `SECURITY.md` as the explanation of the Azure boundary, so an Azure reader was sent to a
+  document that said Azure did not exist. This is worse than a stale count: a security policy's job
+  is to tell someone what to report, and this one excluded the guard most worth attacking. The
+  wrong-scope bullet now lists each cloud's guards separately, because the escape routes differ —
+  AWS has no identifier that embeds an account, so it needs no `scope_conflict` analogue.
+
+### Added
+- **CI now fails if `SECURITY.md` does not name every implemented cloud's scope guards.** The stale
+  text above existed because nothing checked it; the recipe-count gate checks `README.md` only.
+  Providers are **discovered**, not listed, since a hardcoded list would have to be edited by the
+  same commit that adds a cloud — precisely the edit that was missed here. A descriptor that reaches
+  no recipes is exempt: it genuinely is unimplemented, so the out-of-scope sentence is correct about
+  it. Measured across nine cases before being trusted: the real pre-fix text fails on all three of
+  its defects; a cloud named *only* in the out-of-scope section fails, so the section split is load
+  bearing rather than a substring search; a simulated third cloud with recipes fails until the
+  document names it; a recipe-less descriptor passes; zero discovered providers is an explicit error
+  rather than a vacuous pass; and both dash forms parse, so an editor's autocorrect cannot disable
+  the check. A renamed `**Out of scope:**` heading now reports which file to edit instead of raising
+  a tuple-unpacking traceback.
+- `src/remgen/providers/azure/__init__.py` added to the `docs-refs` path list, since `SECURITY.md`
+  now sends a researcher there to find the cross-subscription guard.
 
 ## [0.2.0] — 2026-08-07
 

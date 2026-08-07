@@ -23,16 +23,25 @@ files. So the interesting failures are not the usual ones.
 **In scope — these are real and I want to hear about them:**
 
 - **A generated artifact that acts on the wrong scope.** The highest-severity class. If you can
-  make the tool emit a script or HCL file that targets a different cloud, account or region than the
-  one it claims — defeating the per-cloud/per-account/per-region split, the
-  `aws sts get-caller-identity` preflight, or `allowed_account_ids` — that is a critical finding.
-  The failure mode is a *silent success* against the wrong resources.
+  make the tool emit a script or HCL file that targets a different cloud, credential scope or region
+  than the one it claims, that is a critical finding. The failure mode is a *silent success* against
+  the wrong resources. The guards differ per cloud, because the escape routes do:
+  - **AWS** — the per-cloud/per-account/per-region output split, the
+    `aws sts get-caller-identity` preflight, and `allowed_account_ids` in the generated HCL.
+  - **Azure** — the `az account list` reachability preflight, `subscription_id` in the generated
+    HCL, and `scope_conflict` in `src/remgen/providers/azure/__init__.py`, which refuses to
+    generate when a finding's ARM `resource_id` names a different subscription than its
+    `account_id`. That check exists because `az` resolves `--ids` *in preference to*
+    `--subscription`, so a mismatched pair would mutate a resource in one subscription from a
+    script whose guard confirms another. A way past it is the Azure equivalent of defeating the
+    AWS preflight. Also in scope: a rendered `az` command that does not pin its subscription at
+    all, which `SubscriptionNotPinnedError` is meant to make unreachable.
 - **Anything written outside `--out`.** The cloud id becomes a directory name in the output path, so
   a value that is not a single path segment would escape it. It is validated where it is set rather
   than at each path join, and a way past that check is a path-traversal finding.
 - **Injection through a finding record into generated output.** Findings are untrusted input. A
-  crafted resource name, ARN, or account id that escapes quoting and becomes executable shell or
-  breaks HCL structure is a vulnerability.
+  crafted resource name, ARN, ARM id, account id or subscription id that escapes quoting and becomes
+  executable shell or breaks HCL structure is a vulnerability.
 - **A finding silently dropped.** Input and output counts must reconcile. A record that vanishes
   without being reported as a rejection is a missed remediation that looks like a clean run.
 - **A remediation misclassified as safer than it is** — an irreversible, cost-scaled, or
@@ -42,13 +51,15 @@ files. So the interesting failures are not the usual ones.
 
 **Out of scope:**
 
-- An AWS API call that fails in your account because of SCPs, permission boundaries, or resource
-  state. The generated scripts fail fast on this by design.
+- A cloud API call that fails in your account because of SCPs, Azure Policy, permission boundaries,
+  RBAC, or resource state. The generated scripts fail fast on this by design.
 - The consequences of running a `--safety-level caution` or `--safety-level all` artifact you chose
   to run. Those levels require an explicit opt-in and the warnings are inline in the artifact.
 - Missing coverage. An unsupported policy is reported as unsupported; that is the documented
-  behavior, not a vulnerability. The same goes for a cloud with no recipes: Azure, GCP and OCI are
-  unimplemented, not silently broken.
+  behavior, not a vulnerability. The same goes for a cloud with no recipes: GCP and OCI are
+  unimplemented, not silently broken. Partial coverage on a *supported* cloud is the same —
+  `awsremgen` and `azremgen` each cover a small curated subset, and `policies --unsupported`
+  reports the gap.
 
 ## Supported versions
 
