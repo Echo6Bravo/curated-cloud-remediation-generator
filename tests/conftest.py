@@ -1,17 +1,47 @@
 """Shared test configuration.
 
 Holds the OpenTofu provider setup, which is a property of the whole session rather
-than of any one test.
+than of any one test, plus the one cross-cloud assertion pattern that must not be
+allowed to drift between the two recipe-set files.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+#: Matches a caveat saying that something working today stops when the fix is applied.
+#:
+#: Lives here, not in either recipe-set file, because it is the detector behind the
+#: rule that a ``safest`` recipe withdrawing existing access must promote that warning
+#: to ``critical_caveats`` -- and the whole value of the rule is that both clouds are
+#: held to the same reading. Two copies would diverge on the first cloud-specific
+#: reword.
+#:
+#: Phrased around the *consequence* rather than any recipe's wording, which was learned
+#: the hard way: a first draft listed the S3 recipe's own phrases, reported zero hits
+#: against Azure, and so implied Azure had no access-withdrawing recipes when five of
+#: its eight are exactly that. A detector narrow enough to pass is not a detector.
+#:
+#: Known limitation, stated because it bounds what this can promise: it is a text
+#: search over authored prose, so a recipe that never says its change breaks anything
+#: is not caught. Nothing structural records "withdraws existing access" -- see
+#: ``Recipe.critical_caveats`` -- and until a tier input does, this is the guard
+#: available.
+WITHDRAWS_ACCESS = re.compile(
+    r"stops? (working|replicating|being|serving|immediately)"
+    r"|will fail"
+    r"|loses? the ability"
+    r"|breaks (it|existing)"
+    r"|access stops"
+    r"|no longer (be )?(able|work|honoured|honored|served)",
+    re.IGNORECASE,
+)
 
 #: The provider constraint every generated-HCL check is validated against. Declared
 #: once here so the warmed workspace and the per-test workspaces cannot disagree --

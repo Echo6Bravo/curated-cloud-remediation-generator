@@ -814,6 +814,195 @@ jobs:
                 + ", ".join(f"{p.display_name} ({len(p.all_recipes())} recipes)" for p in implemented))
           PY
 
+      - name: The exception assumption is stated cloud-neutrally
+        # The tool has no concept of a Tenable Cloud Security exception: `Finding` carries a
+        # policy id, a resource id, a region and an account, and nothing about suppression or
+        # accepted risk. So a resource excepted *because its exposure is intentional* will be
+        # remediated anyway if that finding reaches the tool. That is a real limitation and it
+        # is documented -- this step exists because it is the kind of documentation that rots
+        # into a per-cloud footnote.
+        #
+        # Two failure modes, both checked. The statement must live on `Finding`, in the shared
+        # ingest layer, rather than in one provider: an assumption stated in `aws/` is one a
+        # future cloud inherits silently and a reader of `azure/` never sees. And README.md
+        # must state it for operators, since scoping the export is the only actual mitigation
+        # and only an operator can do it.
+        #
+        # Deliberately NOT a keyword search for "exception" -- that word appears in this
+        # codebase for `raise`/`except` and would pass on any file. It asserts the two
+        # load-bearing halves: that exceptions do not survive an export, and that the reader
+        # is told to scope the export rather than to trust the tool.
+        run: |
+          python3 - <<'PY'
+          import importlib, pathlib, pkgutil, re, sys
+          sys.path.insert(0, "src")
+          import remgen.providers
+          from remgen.core.model import Finding
+          from remgen.core.provider import Provider
+          errs = []
+          # 1. The shared model states it, so every cloud inherits it.
+          doc = re.sub(r"\s+", " ", Finding.__doc__ or "")
+          if "no field for an exception" not in doc:
+              errs.append("remgen.core.model.Finding's docstring does not state that it carries no"
+                          " field for an exception; state it there rather than in a provider, so a"
+                          " cloud added later inherits it instead of rediscovering it")
+          if "do not survive" not in doc:
+              errs.append("Finding's docstring does not say exceptions do not survive a findings"
+                          " export, which is the half an operator can actually act on")
+          # 2. README states it for operators, cloud-neutrally.
+          readme = re.sub(r"\s+", " ", pathlib.Path("README.md").read_text())
+          if "do not survive a findings export" not in readme:
+              errs.append("README.md does not state that exceptions do not survive a findings export")
+          # Two phrasings, because the mitigation is the claim and the wording is not. This
+          # fired on a legitimate reword ("scope your export" -> "scoping the export is yours
+          # to do") that changed no meaning, which is the failure mode that gets a check
+          # deleted rather than fixed. Both forms must still name the export as the operator's
+          # lever, so a check that only says "the limitation exists" cannot pass.
+          if not re.search(r"scop\w+ (your |the )?export", readme):
+              errs.append("README.md does not tell the operator to scope their export; without that"
+                          " the limitation is stated with no mitigation")
+          # 3. It must not be scoped to one cloud. Providers are discovered, as elsewhere in
+          #    this workflow, so a third cloud cannot make this check quietly incomplete.
+          names = []
+          for _finder, name, ispkg in pkgutil.iter_modules(remgen.providers.__path__):
+              if not ispkg:
+                  continue
+              module = importlib.import_module(f"remgen.providers.{name}")
+              for value in vars(module).values():
+                  if isinstance(value, Provider) and value.all_recipes():
+                      names.append(value.display_name)
+          if len(names) < 2:
+              print("::error::fewer than two implemented providers discovered; the cloud-neutrality"
+                    " half of this check would pass vacuously")
+              sys.exit(1)
+          # The sentence carrying the generality claim must name every implemented cloud, or the
+          # limitation is a per-cloud footnote wearing a general claim's clothes.
+          #
+          # Anchored on that one sentence rather than on a character window around the
+          # limitation. A window was tried first and mutation testing caught it: deleting
+          # ", for Azure, and any cloud added later" still passed, because the *examples*
+          # paragraph below mentions Azure storage and satisfied a substring search. The check
+          # has to read the clause that makes the claim, not the neighbourhood it sits in.
+          claim = re.search(r"This holds for [^.]*\.", readme)
+          if not claim:
+              errs.append("README.md's exception limitation has no 'This holds for ...' sentence"
+                          " asserting which clouds it covers; without it the limitation reads as"
+                          " specific to whichever cloud the examples happen to name")
+          else:
+              for display in names:
+                  if display not in claim.group(0):
+                      errs.append(f"README.md's exception limitation does not say it holds for"
+                                  f" {display}; it ships recipes, and the boundary is a property of"
+                                  " shared findings ingest, so the claim must name it")
+          if errs:
+              print("Exception-assumption check FAILED:")
+              for e in errs: print("  -", e)
+              sys.exit(1)
+          print("exception assumption stated on Finding and in README.md, covering: "
+                + ", ".join(sorted(names)))
+          PY
+
+      - name: The inline-warning promise holds for what the tier cannot derive
+        # README.md makes two claims that pull against each other, and this executes the
+        # resolution rather than trusting the prose. It promises warnings stay inline next to
+        # the command, *and* it relocates every caveat to the run's README to keep artifacts
+        # small. Those are compatible only because inline warnings are derived from the tier
+        # fields -- and there is one consequence those four fields cannot express: a change
+        # that is reversible, free and in-place while still withdrawing access somebody uses.
+        # `critical_caveats` is the exception, so the exception is what gets checked.
+        #
+        # Not a test in the suite because the claim being checked is a *documented* one: the
+        # suite already proves the field renders (tests/test_artifacts.py) and that the bar for
+        # using it holds (both recipe-set files). What rots independently of those is README.md
+        # describing a mechanism that no longer matches, or a count that quietly drifts.
+        #
+        # Provider-discovered, like the check above, so a third cloud cannot make it partial.
+        run: |
+          python3 - <<'PY'
+          import importlib, pathlib, pkgutil, re, sys
+          sys.path.insert(0, "src")
+          import remgen.providers
+          from remgen.core.generators.common import CRITICAL_CAVEAT_MARKER, recipe_notes
+          from remgen.core.model import SafetyTier
+          from remgen.core.provider import Provider
+          errs = []
+
+          providers = []
+          for _finder, name, ispkg in pkgutil.iter_modules(remgen.providers.__path__):
+              if not ispkg:
+                  continue
+              module = importlib.import_module(f"remgen.providers.{name}")
+              for value in vars(module).values():
+                  if isinstance(value, Provider) and value.all_recipes():
+                      providers.append(value)
+          if len(providers) < 2:
+              print("::error::fewer than two implemented providers discovered; this check would"
+                    " pass while covering one cloud")
+              sys.exit(1)
+
+          recipes = [r for p in providers for r in p.all_recipes()]
+          promoted = [r for r in recipes if r.critical_caveats]
+
+          # 1. The mechanism is live. A field nobody uses is a field that silently stops
+          #    working, and the README describes it in the present tense.
+          if not promoted:
+              errs.append("no recipe promotes a critical caveat, but README.md documents the `!!`"
+                          " channel as something the tool does. Either a recipe lost its promotion"
+                          " or the documentation is describing a mechanism that is not in use")
+
+          # 2. The marker README teaches is the marker the artifacts use. A reader told to look
+          #    for `!!` who finds something else has been given a search that fails silently.
+          if CRITICAL_CAVEAT_MARKER.strip() not in ("!!",):
+              errs.append(f"the inline marker is {CRITICAL_CAVEAT_MARKER.strip()!r}, but README.md"
+                          " and both example READMEs teach `!!`. Update the docs with the code")
+
+          # 3. It actually reaches the rendered notes, checked through the shared renderer both
+          #    shell generators and the HCL generator call. Asserting the field is set would
+          #    only re-read the recipe.
+          for recipe in promoted:
+              notes = " ".join(recipe_notes(recipe))
+              for caveat in recipe.critical_caveats:
+                  if caveat[:40] not in notes:
+                      errs.append(f"{recipe.policy_id}: a promoted caveat does not appear in the"
+                                  " rendered recipe notes, so it reaches the run README only --"
+                                  " which is the exact failure this field was added to fix")
+
+          # 4. The stated bar is the enforced bar. README.md says `caution`/`disruptive` recipes
+          #    may not use the channel; if that stops being true the sentence is a claim about
+          #    nothing.
+          for recipe in promoted:
+              if recipe.safety_tier is not SafetyTier.SAFEST:
+                  errs.append(f"{recipe.policy_id}: is `{recipe.safety_tier.value}` and promotes a"
+                              " caveat inline. README.md states the channel is reserved for"
+                              " `safest`, whose banner is the thing being warned past")
+
+          # 5. The count in README.md is the real count. Written as a number in prose, which is
+          #    the form that goes stale the moment a batch lands -- the same failure the policy
+          #    register gate below exists for.
+          readme = re.sub(r"\s+", " ", pathlib.Path("README.md").read_text())
+          claim = re.search(r"(\w+) recipes across both clouds use it", readme)
+          words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                   "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+          if not claim:
+              errs.append("README.md no longer states how many recipes use the `!!` channel; the"
+                          " sentence is what makes the mechanism's scope checkable")
+          else:
+              stated = words.get(claim.group(1).lower())
+              if stated is None:
+                  errs.append(f"README.md says {claim.group(1)!r} recipes use the `!!` channel,"
+                              " which is not a number this check can compare. Spell it out")
+              elif stated != len(promoted):
+                  errs.append(f"README.md says {stated} recipes use the `!!` channel; {len(promoted)}"
+                              " do. Update the sentence, or explain why the count moved")
+
+          if errs:
+              print("Inline-warning promise check FAILED:")
+              for e in errs: print("  -", e)
+              sys.exit(1)
+          print(f"the `!!` channel is live in {len(promoted)} of {len(recipes)} recipes across "
+                + ", ".join(sorted(p.display_name for p in providers)))
+          PY
+
       - name: Every cloud's policy triage register agrees with its recipes
         # <CLOUD>_POLICY_TRIAGE.md assigns every one of that cloud's policies to exactly one
         # of four buckets, and ROADMAP.md cites the rejection classes as the reason a policy

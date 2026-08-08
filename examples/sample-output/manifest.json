@@ -1,7 +1,7 @@
 {
   "generator": "awsremgen (curated-cloud-remediation-generator)",
   "version": "0.2.1",
-  "generated_at": "2026-08-07T19:36:15+00:00",
+  "generated_at": "2026-08-08T14:02:17+00:00",
   "applied": false,
   "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
   "clouds": [
@@ -33,6 +33,13 @@
       "reversible": true,
       "hcl_resource_type": "aws_db_instance"
     },
+    "80b8e9b6-c285-4939-b115-452dfd65bbcc": {
+      "title": "S3 Bucket block public access is not enabled",
+      "safety_tier": "safest",
+      "api": "s3.PutPublicAccessBlock",
+      "reversible": true,
+      "hcl_resource_type": "aws_s3_bucket_public_access_block"
+    },
     "8d1140ba-c917-44d7-b2ea-084f9dffe707": {
       "title": "CloudTrail S3 Bucket log file validation is not enabled",
       "safety_tier": "safest",
@@ -59,10 +66,11 @@
       "region": null,
       "part": null,
       "total_parts": 1,
-      "remediations": 4,
+      "remediations": 5,
       "policy_counts": {
         "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
         "468d7976-445f-44c2-b9fb-45fb1005f373": 1,
+        "80b8e9b6-c285-4939-b115-452dfd65bbcc": 1,
         "8d1140ba-c917-44d7-b2ea-084f9dffe707": 1,
         "995e8d78-940a-45bf-bac1-61a1fdb00d7a": 1
       }
@@ -93,10 +101,11 @@
       "region": "us-east-1",
       "part": null,
       "total_parts": 1,
-      "remediations": 3,
+      "remediations": 4,
       "policy_counts": {
         "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
         "468d7976-445f-44c2-b9fb-45fb1005f373": 1,
+        "80b8e9b6-c285-4939-b115-452dfd65bbcc": 1,
         "8d1140ba-c917-44d7-b2ea-084f9dffe707": 1
       }
     },

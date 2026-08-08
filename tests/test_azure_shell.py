@@ -19,6 +19,7 @@ tells them so.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 
@@ -26,6 +27,7 @@ import pytest
 
 from remgen.core.layout import Format, OutputUnit
 from remgen.core.model import ApiCall, Finding, Recipe
+from remgen.providers.azure.recipes import all_recipes as azure_recipes
 from remgen.providers.azure.shell import (
     SubscriptionNotPinnedError,
     render_cli_script,
@@ -328,6 +330,43 @@ def test_the_rendered_command_targets_the_finding_s_subscription():
     out = _script()
     assert f"--subscription {SUB}" in out
     assert OTHER_SUB not in out
+
+
+# ---------------------------------------------------------------------------
+# Critical caveats reach the Azure artifact too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("recipe", azure_recipes(), ids=lambda r: r.policy_id)
+def test_shipped_critical_caveats_render_inline_in_the_azure_script(recipe):
+    """The shipped Azure set, not a constructed recipe.
+
+    ``tests/test_artifacts.py`` proves the mechanism and parametrizes over the *AWS*
+    registry, so it cannot see that five Azure recipes rely on it -- disabling SFTP,
+    local-user authentication, plain HTTP, TLS 1.0/1.1, and cross-tenant replication all
+    withdraw something that works today while deriving to ``safest``. Without this test
+    an Azure-side regression in the shell generator would be caught only by AWS
+    coverage, or not at all if the two shell modules ever diverge.
+
+    Asserted against unwrapped text: ``comment_block`` wraps caveat prose to a column,
+    so a present caveat is not a literal substring of the output.
+    """
+    if not recipe.critical_caveats:
+        pytest.skip(f"{recipe.policy_id} declares no critical caveats")
+    pairs = [(recipe, _finding())]
+    flat = re.sub(r"\s+", " ", re.sub(r"(?m)^\s*#\s?", "", _script(pairs)))
+    for caveat in recipe.critical_caveats:
+        assert caveat in flat, f"critical caveat missing from the Azure script: {caveat!r}"
+
+
+def test_at_least_one_shipped_azure_recipe_exercises_the_test_above():
+    # The parametrized test skips per recipe, so a set that promoted nothing would
+    # report all-skipped as success. This is the floor that makes it real.
+    promoted = [r for r in azure_recipes() if r.critical_caveats]
+    assert len(promoted) >= 5, (
+        f"only {len(promoted)} Azure recipe(s) promote a critical caveat; 5 did when this "
+        f"was written, so the test above is now largely skipped"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,24 @@ the default already emits every one and passing `caution` would exercise the fla
 tool. That is a fact about the current recipe set rather than a property of Azure: the day a
 `caution` Azure recipe lands, this command and the committed sample change together.
 
+**`safest` does not mean nothing stops working, and five of these eight recipes prove it.** The tier
+derives from four fields -- reversible, cost, data-path impact, whether it blocks `tofu destroy` --
+and none of them means "withdraws access something is using today". Disabling SFTP, disabling local
+users, requiring HTTPS, requiring TLS 1.2 and disabling cross-tenant replication are each honestly
+`safest` by that formula, and each one breaks a client that depends on what it turns off. Those five
+carry their warning inline, marked `!!`, next to the command rather than in this file. Three of them
+appear in this sample; here is one:
+
+```bash
+# !! Any client still connecting over plain HTTP will fail after this change. That
+#    traffic is unencrypted today, which is the finding -- but confirm no legacy client
+#    depends on it before applying fleet-wide.
+```
+
+Where a merged `.tf` block applies several such policies at once, each line is tagged with the policy
+it comes from -- applying the block applies all of them, so one contributor's warning is not the
+block's whole story.
+
 CI regenerates both samples on every push and fails if either drifts.
 
 ## What differs from the AWS sample
@@ -44,7 +62,7 @@ sample-output-azure/
     └── remediate-azure-d27e6b04-…-all-regions.tf    ← 1
 ```
 
-Four files from five remediations, where AWS's six produced five. The AWS `.tf` output splits again
+Four files from five remediations, where AWS's seven produced five. The AWS `.tf` output splits again
 by region because an AWS provider block *is* region-scoped. An `azurerm` provider block carries no
 location at all — every resource names its own — so one `.tf` legitimately spans locations, and
 splitting per location would fragment output without making it more correct.

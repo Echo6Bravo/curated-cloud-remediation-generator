@@ -77,7 +77,7 @@ each one brings its own irreversible operations under the same flag.
   record what they do *not* cover: the `Custom`, `KubernetesAdmissionController` and uncategorised
   policies, which no pass has triaged.
 - **The design ceiling, per cloud, is the number worth quoting** rather than a coverage percentage:
-  61 of 237 for AWS (26%), 81 of 217 for Azure (37%). The rest cannot be expressed as one idempotent,
+  61 of 237 for AWS (26%), 76 of 217 for Azure (35%). The rest cannot be expressed as one idempotent,
   reversible, per-resource API call, and the registers say why by class rather than by policy. Azure's
   ceiling is higher because `az <service> update --ids` is a more uniform surface than AWS's
   per-service APIs — and Azure has one rejection class AWS does not, for the commands where that

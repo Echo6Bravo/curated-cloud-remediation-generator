@@ -65,7 +65,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from remgen import PROJECT_NAME
-from remgen.core.generators.common import comment_block, recipe_notes, render_template
+from remgen.core.generators.common import (
+    CRITICAL_CAVEAT_MARKER,
+    comment_block,
+    critical_caveat_lines,
+    recipe_notes,
+    render_template,
+)
 from remgen.core.layout import OutputUnit
 from remgen.core.model import Finding, Recipe, SafetyTier, to_hcl_label
 
@@ -549,6 +555,23 @@ def _merged_target_notes(target: MergedTarget) -> list[str]:
     # "Reversible: <command>" lines with different commands, and a reader undoing the
     # block would take either one as *the* reversal when both are needed. The policy
     # title says which change each line undoes.
+    #
+    # Critical caveats go first and keep their marker: a merged block applies every
+    # contributing policy at once, so if any one of them withdraws access, applying
+    # the block withdraws it. Ordering them above the reversal lines means the reader
+    # meets the reason to stop before the instructions for carrying on.
+    critical: list[str] = []
+    for recipe in target.recipes:
+        for line in critical_caveat_lines(recipe.critical_caveats):
+            attributed = f"{CRITICAL_CAVEAT_MARKER}[{recipe.policy_title}] " + line.removeprefix(
+                CRITICAL_CAVEAT_MARKER
+            )
+            if attributed not in critical:
+                critical.append(attributed)
+    if critical:
+        notes.append("")
+        notes.extend(critical)
+
     seen: list[str] = []
     for recipe in target.recipes:
         for note in recipe.safety_notes:

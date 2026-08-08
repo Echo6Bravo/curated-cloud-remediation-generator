@@ -22,6 +22,14 @@
       "accountId": "111111111111"
     },
     {
+      "_comment": "Block Public Access on the same bucket as the versioning finding above, and on that bucket on purpose: its name says it serves web assets, so it is exactly the case the recipe's critical caveat is about. The generated artifacts carry that caveat inline, next to the command, because the safety tier derives to `safest` -- reversible, free, in-place -- and cannot express 'this may take a published site offline'.",
+      "policyId": "80b8e9b6-c285-4939-b115-452dfd65bbcc",
+      "resourceId": "acme-web-assets-use1",
+      "resourceName": "acme-web-assets-use1",
+      "region": "us-east-1",
+      "accountId": "111111111111"
+    },
+    {
       "policyId": "995e8d78-940a-45bf-bac1-61a1fdb00d7a",
       "resourceId": "3f9c0a11-6d2e-4b8a-9c77-2b1e5d4a8f60",
       "resourceName": "alias/reporting-exports",

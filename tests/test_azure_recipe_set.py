@@ -53,6 +53,7 @@ from remgen.core.generators.hcl import group_targets
 from remgen.core.model import CostImpact, Effort, Finding, SafetyTier
 from remgen.providers.azure import recipes as recipes_pkg
 from remgen.providers.azure.recipes import REGISTRY, all_recipes, get
+from tests.conftest import WITHDRAWS_ACCESS
 
 #: A subscription-shaped scope and an ARM-shaped resource id, used wherever a finding
 #: is needed. AWS-shaped values would satisfy every assertion below while testing
@@ -775,6 +776,56 @@ def test_safest_recipes_carry_no_ongoing_cost():
             f"-- but carries {recipe.cost_impact.value} ongoing cost. The tier formula "
             f"does not catch this; only this test does."
         )
+
+
+def test_a_recipe_that_withdraws_existing_access_says_so_inline():
+    """The Azure half of the rule, sharing the AWS detector rather than restating it.
+
+    Five of this set's eight recipes shut something off that works today: SFTP,
+    local-user authentication, plain-HTTP clients, TLS 1.0/1.1 clients, and a
+    cross-tenant replication policy. All five are honestly ``safest`` -- reversible,
+    free, in-place -- so their banner says SAFEST, and ``safety_tier`` derives from four
+    booleans none of which mean "withdraws existing access". Without a promoted caveat
+    the warning that a data-transfer job stops working sits in the run README while the
+    operator reads the command.
+
+    ``WITHDRAWS_ACCESS`` comes from ``conftest`` deliberately: this rule is only worth
+    having if both clouds are held to the same reading of it, and a per-file copy would
+    diverge on the first cloud-specific reword. Its first draft, written from the S3
+    recipe's phrasing, matched none of these five -- which is why the shared pattern
+    describes the consequence rather than any recipe's words.
+    """
+    for recipe in _recipes():
+        if recipe.safety_tier is not SafetyTier.SAFEST:
+            continue
+        if not WITHDRAWS_ACCESS.search(" ".join(recipe.caveats)):
+            continue
+        assert recipe.critical_caveats, (
+            f"{recipe.policy_id}: is `safest` and a caveat says something working today "
+            f"stops, but nothing is promoted to `critical_caveats`. The artifact would "
+            f"show a SAFEST banner over the command with that warning in another file"
+        )
+
+
+def test_the_withdrawal_detector_actually_matches_this_set():
+    """Anti-vacuity for the test above, and the reason it exists is a real near-miss.
+
+    The rule is a text search, so it fails open: reword every caveat and it reports
+    nothing wrong. That is exactly what the first draft of the pattern did against this
+    set -- zero hits, silently implying Azure had no access-withdrawing recipes while
+    five of them are. Asserting a floor here means a future narrowing of the pattern
+    breaks this test instead of quietly disarming the one above.
+
+    The floor is 5 rather than 1 because 1 would survive the same regression: the S3
+    wording that the first draft did match is in the *AWS* set, so an AWS-shaped
+    pattern scores 1 here on coincidence and 5 only if it genuinely reads consequences.
+    """
+    matched = [r for r in _recipes() if WITHDRAWS_ACCESS.search(" ".join(r.critical_caveats))]
+    assert len(matched) >= 5, (
+        f"the shared withdrawal pattern matches only {len(matched)} Azure recipe(s); it "
+        f"matched 5 when written, so it has been narrowed and the rule above is now "
+        f"weaker than it reads. Matched: {[r.policy_title for r in matched]}"
+    )
 
 
 def test_at_least_one_recipe_is_safest():
