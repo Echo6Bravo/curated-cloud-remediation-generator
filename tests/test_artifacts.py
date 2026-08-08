@@ -16,6 +16,7 @@ import re
 import pytest
 
 from remgen.core.artifacts import render_manifest, render_readme
+from remgen.core.generators.common import CRITICAL_CAVEAT_MARKER
 from remgen.core.generators.hcl import render_hcl
 from remgen.core.layout import Format, plan_units
 from remgen.core.model import ApiCall, CostImpact, Finding, HclTarget, Recipe
@@ -147,6 +148,96 @@ def test_safety_notes_stay_in_the_artifacts_not_only_the_readme(recipe):
         hcl = _uncommented(render_hcl(pairs, version=VERSION, generated_at=STAMP))
         for note in recipe.safety_notes:
             assert note in hcl, f"safety note missing from the HCL: {note!r}"
+
+
+@pytest.mark.parametrize("recipe", all_recipes(), ids=lambda r: r.policy_id)
+def test_critical_caveats_reach_every_artifact_and_the_readme(recipe):
+    """A critical caveat is the one authored line that must not be relocated.
+
+    ``caveats`` live in the README only, and ``safety_notes`` live in both -- but
+    safety notes are derived from four structured fields, so a consequence those
+    fields cannot express has no way to reach the artifact. S3 Block Public Access is
+    reversible, free and in-place, so it derives to ``safest`` and its banner says so,
+    while applying it stops anonymous reads. ``critical_caveats`` is the channel for
+    exactly that, and this test is what makes it a channel rather than a field nobody
+    renders: it must be in the script, in the HCL and in the README.
+    """
+    if not recipe.critical_caveats:
+        pytest.skip(f"{recipe.policy_id} declares no critical caveats")
+    pairs = _pairs(recipe)
+    script = _uncommented(render_cli_script(pairs, version=VERSION, generated_at=STAMP))
+    readme = _readme(pairs)
+    for caveat in recipe.critical_caveats:
+        assert caveat in script, f"critical caveat missing from the script: {caveat!r}"
+        assert caveat in readme, f"critical caveat missing from the README: {caveat!r}"
+        if recipe.hcl is not None:
+            hcl = _uncommented(render_hcl(pairs, version=VERSION, generated_at=STAMP))
+            assert caveat in hcl, f"critical caveat missing from the HCL: {caveat!r}"
+
+
+def test_a_critical_caveat_is_marked_not_merely_present():
+    """Present-but-unmarked defeats the purpose of promoting it.
+
+    The reason this field exists is that the derived banner above the command can read
+    SAFEST while the caveat says a website stops serving. If the caveat renders as one
+    more ordinary note in the same block, a reader scanning tiers still misses it. So
+    the marker is asserted, and asserted next to the caveat's own first words rather
+    than merely somewhere in the file.
+
+    The marker constant is checked for substance *before* it is interpolated, which is
+    not defensive noise: the first version of this test asserted only
+    ``f"# {CRITICAL_CAVEAT_MARKER}CONFIRM..."``, and setting the constant to ``""``
+    made that assertion trivially true while the rendered output became
+    indistinguishable from an ordinary note. A test written in terms of the value it is
+    checking passes by construction.
+    """
+    assert CRITICAL_CAVEAT_MARKER.strip(), (
+        "the marker is blank, so a critical caveat renders as an ordinary note and the "
+        "interpolated assertions below cannot fail"
+    )
+    caveat = "CONFIRM THIS IS NOT INTENTIONAL: applying this stops anonymous reads."
+    recipe = _recipe(critical_caveats=(caveat,))
+    for text in (
+        render_cli_script(_pairs(recipe), version=VERSION, generated_at=STAMP),
+        render_hcl(_pairs(recipe), version=VERSION, generated_at=STAMP),
+    ):
+        assert f"# {CRITICAL_CAVEAT_MARKER}CONFIRM THIS IS NOT INTENTIONAL" in text
+        # And distinguishable from the notes it sits beside: the reversal line is
+        # rendered in the same block from the same helper, so if the marker stopped
+        # setting the two apart this equality would hold.
+        marked = [ln for ln in text.splitlines() if "CONFIRM THIS IS NOT INTENTIONAL" in ln]
+        plain = [ln for ln in text.splitlines() if "Reversible:" in ln]
+        assert marked and plain
+        assert not marked[0].startswith(plain[0][: len("# ") + 1]), (
+            "a critical caveat and an ordinary safety note begin identically"
+        )
+
+
+def test_a_critical_caveat_precedes_the_command_it_warns_about():
+    """Order is the whole point: after the command it is a post-mortem.
+
+    ``comment_block`` output and the command are assembled separately, so an edit that
+    appends the critical notes -- or moves the per-policy header below the commands --
+    would still satisfy the presence test above while putting the stop sign after the
+    thing it was meant to stop.
+    """
+    recipe = _recipe(critical_caveats=("STOP AND CONFIRM before applying.",))
+    script = render_cli_script(_pairs(recipe), version=VERSION, generated_at=STAMP)
+    assert script.index("STOP AND CONFIRM") < script.index(recipe.api.service + "api put-thing")
+
+
+def test_promoting_a_caveat_moves_it_rather_than_copying_it():
+    """The two tuples are disjoint, enforced at construction.
+
+    ``caveats`` is asserted to appear in the README *and nowhere else*, which is what
+    proves the reference detail was relocated rather than duplicated back inline. A
+    caveat left in both tuples would render twice in the README and reach the
+    artifacts, quietly breaking that guarantee -- so the model rejects it outright
+    instead of leaving it to a reviewer to notice.
+    """
+    shared = "Applies only to new objects."
+    with pytest.raises(ValueError, match="promote a caveat by moving it"):
+        _recipe(caveats=(shared,), critical_caveats=(shared,))
 
 
 def test_cost_warning_reaches_the_artifact():

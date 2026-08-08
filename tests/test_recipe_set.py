@@ -52,6 +52,7 @@ from remgen.core.generators.hcl import group_targets
 from remgen.core.model import CostImpact, Finding, SafetyTier
 from remgen.providers.aws import recipes as recipes_pkg
 from remgen.providers.aws.recipes import REGISTRY, all_recipes, get
+from tests.conftest import WITHDRAWS_ACCESS
 
 
 def _recipes():
@@ -408,9 +409,19 @@ def test_the_reversal_undoes_the_same_call_the_remediation_makes():
     ``reverse_hint`` is free prose that is printed to an operator as the way out, and
     nothing else checks it. A hint that drifted to another subcommand -- after a
     copy-paste between recipes, which is how this file grows -- reads as authoritative
-    and silently does something else, or nothing. So the service and subcommand must
-    match the remediation's own; only the flags may differ, since inverting the change
-    is the point.
+    and silently does something else, or nothing. So the service must match, and the
+    subcommand must either match or be the API's own documented inverse.
+
+    The paired-verb exemption is not a loosened rule, it is the rule stated correctly.
+    The original assumed every remediation inverts through the same subcommand with
+    different flags, which holds for the ``update-*``/``modify-*`` verbs this file
+    started with. It is false for AWS's ``put``/``delete`` sub-resource pairs: S3
+    Block Public Access is removed by ``DeletePublicAccessBlock``, and the same-verb
+    alternative -- ``put-public-access-block`` with all four flags ``false`` -- does
+    not restore the prior state. It leaves a BPA configuration present and explicitly
+    permissive, which is a different resource state than having none, and a worse one
+    to hand an operator as "the way out". Only exact ``put``/``delete`` pairs on the
+    same noun qualify, so a hint that drifted to an unrelated subcommand still fails.
     """
     for recipe in _recipes():
         if not recipe.reverse_hint:
@@ -418,9 +429,20 @@ def test_the_reversal_undoes_the_same_call_the_remediation_makes():
         forward = recipe.cli_template.split()
         reverse = recipe.reverse_hint.split()
         assert reverse[:1] == ["aws"], f"{recipe.policy_id}: reverse_hint must invoke `aws`"
-        assert reverse[1:3] == forward[1:3], (
+        assert reverse[1:2] == forward[1:2], (
+            f"{recipe.policy_id}: remediation runs `{forward[1]}` but the reversal runs "
+            f"`{reverse[1]}`; a reversal in another service does not undo the change"
+        )
+        forward_verb, reverse_verb = forward[2], reverse[2]
+        paired = (
+            forward_verb.startswith("put-")
+            and reverse_verb.startswith("delete-")
+            and forward_verb.removeprefix("put-") == reverse_verb.removeprefix("delete-")
+        )
+        assert reverse_verb == forward_verb or paired, (
             f"{recipe.policy_id}: remediation runs `{' '.join(forward[1:3])}` but the "
-            f"reversal runs `{' '.join(reverse[1:3])}`; it does not undo the same call"
+            f"reversal runs `{' '.join(reverse[1:3])}`; it does not undo the same call. "
+            f"A different subcommand is accepted only for an exact put-X/delete-X pair."
         )
 
 
@@ -436,6 +458,77 @@ def test_at_least_one_recipe_is_safest():
     assert SafetyTier.SAFEST in tiers, (
         "no recipe is `safest`, so a default run emits nothing and looks like success"
     )
+
+
+def test_a_critical_caveat_is_reserved_for_what_the_tier_fields_cannot_say():
+    """The field earns its inline slot only by saying something new.
+
+    ``critical_caveats`` is the one authored field rendered next to the command, which
+    makes it the field most likely to be reached for out of ordinary caution -- and a
+    banner where every line shouts is one a reader learns to skip, at which point the
+    channel is worth less than not having it. Two constraints keep the bar where it was
+    set.
+
+    First, the caveat must not restate a derived note. A recipe whose real warning is
+    "not reversible" or "cost scales with usage" already emits that inline from
+    ``safety_notes``; promoting a paraphrase of it adds volume, not information.
+
+    Second, ``caution`` and ``disruptive`` recipes may not use it. Those tiers already
+    carry a banner telling the reader to read every note, so the field's whole purpose
+    -- warning past a reassuring ``safest`` heading -- does not apply. A ``caution``
+    recipe with something more to say has ``caveats`` and the run README.
+    """
+    derived_phrases = ("not reversible", "cannot be fully undone", "cost scales with usage")
+    for recipe in _recipes():
+        if not recipe.critical_caveats:
+            continue
+        assert recipe.safety_tier is SafetyTier.SAFEST, (
+            f"{recipe.policy_id}: is `{recipe.safety_tier.value}`, whose banner already "
+            f"tells the reader to read every note. `critical_caveats` exists to warn past "
+            f"a `safest` heading; put this in `caveats` instead"
+        )
+        for caveat in recipe.critical_caveats:
+            low = caveat.lower()
+            assert not any(phrase in low for phrase in derived_phrases), (
+                f"{recipe.policy_id}: critical caveat restates a note `safety_notes` "
+                f"already emits inline; it must say what the tier fields cannot: {caveat!r}"
+            )
+
+
+def test_a_recipe_that_withdraws_existing_access_says_so_inline():
+    """The gap this field was added to close, asserted from the other direction.
+
+    The tests above prove a critical caveat renders correctly and is not over-used.
+    Neither catches the original defect: a recipe that shuts off access somebody may
+    depend on, shipped as ``safest``, with the warning in ``caveats`` where a reader
+    looking at the command never sees it. That is not hypothetical -- it is how S3
+    Block Public Access was first written here.
+
+    Detection is by intent word rather than by field, because no field records it. That
+    is the actual limitation: ``safety_tier`` derives from four booleans and none of
+    them means "withdraws existing access", so until a fifth tier input exists this
+    text search is the only guard available. Its cost is that it can be defeated by
+    rewording, which is why the pattern is shared with the Azure counterpart -- one
+    pattern to keep honest rather than two to drift apart.
+
+    The pattern was deliberately *widened* after its first draft. That draft matched
+    only the S3 recipe's own wording and reported zero hits against the Azure set,
+    which read as "Azure has no such recipes" when in fact five of them shut off SFTP,
+    local-user authentication, plain-HTTP clients, TLS 1.0/1.1 clients or a
+    cross-tenant replication policy. A detector tuned until it passes is not a
+    detector, so the phrases below describe the *consequence* -- something working
+    today stops -- rather than any recipe's phrasing.
+    """
+    for recipe in _recipes():
+        if recipe.safety_tier is not SafetyTier.SAFEST:
+            continue
+        if not WITHDRAWS_ACCESS.search(" ".join(recipe.caveats)):
+            continue
+        assert recipe.critical_caveats, (
+            f"{recipe.policy_id}: is `safest` and a caveat says something working today "
+            f"stops, but nothing is promoted to `critical_caveats`. The artifact would "
+            f"show a SAFEST banner over the command with that warning in another file"
+        )
 
 
 def test_usage_scaled_cost_comes_with_a_way_to_bound_it():

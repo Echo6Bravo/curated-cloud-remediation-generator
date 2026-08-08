@@ -133,7 +133,7 @@ _POLICY_ENTRY = """\
 - **API:** `{service}.{operation}`
 {hcl_line}
 {summary}
-{safety}{prerequisites}{caveats}{docs}
+{critical}{safety}{prerequisites}{caveats}{docs}
 """
 
 
@@ -175,6 +175,12 @@ def _policy_reference(units: list[OutputUnit]) -> str:
                 operation=recipe.api.operation,
                 hcl_line=hcl_line,
                 summary=f"\n{recipe.summary}\n",
+                # First, and above Safety. A critical caveat is by definition the
+                # consequence the derived safety notes cannot state, so listing it
+                # after them buries the only line the tier fields could not warn
+                # about. It is also emitted inline in the artifacts; this entry is
+                # the full text, since the artifacts carry it wrapped to a comment.
+                critical=_bullets("Read before applying", recipe.critical_caveats),
                 safety=_bullets("Safety", recipe.safety_notes),
                 prerequisites=_bullets("Prerequisites", recipe.prerequisites),
                 caveats=_bullets("Caveats", recipe.caveats),

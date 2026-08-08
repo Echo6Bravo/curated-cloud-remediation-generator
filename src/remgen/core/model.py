@@ -361,6 +361,17 @@ class Recipe:
         prerequisites: Things that must exist first (log groups, IAM roles).
             Rendered as comments so a reviewer sees them before running.
         caveats: Honest warnings — cost, downtime, replacement, partial fixes.
+            Relocated to the run README, which is where reference detail lives.
+        critical_caveats: The subset of warnings that must be read *before* the
+            command runs, so they are rendered inline next to it as well as in the
+            README. Reserved for a consequence the tier fields cannot express.
+            ``safety_tier`` is derived from four structured fields, and a change can
+            be reversible, free and in-place — therefore ``safest`` — while still
+            withdrawing access somebody depends on. S3 Block Public Access is the
+            case that forced this: honestly ``safest``, and it stops anonymous reads
+            of a published dataset the moment it applies. Keep this empty unless the
+            worst outcome of applying the recipe is invisible in the derived notes;
+            a banner where every line shouts is a banner nobody reads.
         docs_url: Authoritative AWS documentation for the operation.
     """
 
@@ -378,6 +389,7 @@ class Recipe:
     blocks_iac_destroy: bool = False
     prerequisites: tuple[str, ...] = field(default_factory=tuple)
     caveats: tuple[str, ...] = field(default_factory=tuple)
+    critical_caveats: tuple[str, ...] = field(default_factory=tuple)
     docs_url: str = ""
 
     def __post_init__(self) -> None:
@@ -394,6 +406,17 @@ class Recipe:
             raise ValueError(
                 f"{self.policy_id}: reversible=True requires a reverse_hint explaining "
                 f"how to undo the change"
+            )
+        # The two caveat tuples are disjoint, not nested. `caveats` is asserted to
+        # appear in the README *and nowhere else*, which is what proves the reference
+        # detail was relocated rather than duplicated back inline. A critical caveat
+        # listed in both tuples would render twice in the README and break that
+        # assertion, so promoting one means moving it, not copying it.
+        both = [c for c in self.critical_caveats if c in self.caveats]
+        if both:
+            raise ValueError(
+                f"{self.policy_id}: {both[0]!r} is in both `caveats` and "
+                f"`critical_caveats`; promote a caveat by moving it, not by copying it"
             )
 
     @property
@@ -478,6 +501,32 @@ class Finding:
 
     Deliberately minimal: the fields every adapter can supply. Identifiers are
     validated at construction so untrusted data cannot reach a generator.
+
+    **This tool does not account for any exceptions configured in Tenable Cloud
+    Security, and this class is where that boundary enters the tool.** There is no
+    field for an exception, a suppression or an accepted risk, so no generator can
+    consult one, and every finding is treated as one the operator intends to fix.
+    Exceptions live in the platform and do not survive a findings export: whether an
+    excepted resource reaches this constructor depends entirely on how the export was
+    filtered, and the tool can neither detect that nor warn about it.
+
+    Deliberate rather than an oversight. The project supplies verified recipes for
+    common, safely scriptable misconfigurations without consulting the operator's
+    specific environment -- it holds no cloud credentials and makes no cloud API
+    calls, so it cannot read an exception list, a resource tag, or the intent behind
+    a configuration. It reasons about the provider's published API surface and the
+    finding it is given, and nothing else. Scoping the export is therefore the
+    operator's job, which is why ``README.md`` says so in those words.
+
+    Stated here rather than in a provider because the boundary is a property of
+    findings ingest, which is shared. It holds for AWS, for Azure, and for any cloud
+    added later -- a provider cannot opt out of it, and a new provider inherits it
+    without having to rediscover it. Recipes whose remediation withdraws access that
+    existing callers may be using must carry the intent question in their caveats;
+    ``aws/recipes/s3.py``'s Block Public Access recipe is the worked example, since
+    an intentionally-public bucket is the ordinary exception case rather than an
+    exotic one. A CI gate keeps this docstring and ``README.md`` in agreement across
+    every implemented cloud.
     """
 
     policy_id: str

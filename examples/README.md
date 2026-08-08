@@ -38,25 +38,25 @@ because how a tool handles bad input is more informative than how it handles goo
 Rejections are *reported*, never dropped. That is why the counts in `sample-run.txt` reconcile:
 
 ```
-10 records read = 8 usable + 2 rejected
- 8 usable       = 1 duplicate merged + 7 distinct
- 7 distinct     = 6 remediations written + 1 with no recipe
+11 records read = 9 usable + 2 rejected
+ 9 usable       = 1 duplicate merged + 8 distinct
+ 8 distinct     = 7 remediations written + 1 with no recipe
 ```
 
 A summary whose numbers do not add up invites you to assume the missing ones were fine.
 
 ## What the output looks like
 
-Seven files from six remediations:
+Seven files from seven remediations:
 
 ```
 sample-output/
 ├── README.md                                          ← per-run instructions and policy reference
 ├── manifest.json                                      ← machine-readable index of every file
 └── aws/
-    ├── remediate-aws-111111111111-all-regions.sh      ← 4 remediations
+    ├── remediate-aws-111111111111-all-regions.sh      ← 5 remediations
     ├── remediate-aws-222222222222-all-regions.sh      ← 2 remediations
-    ├── remediate-aws-111111111111-us-east-1.tf        ← 3
+    ├── remediate-aws-111111111111-us-east-1.tf        ← 4
     ├── remediate-aws-111111111111-us-west-2.tf        ← 1
     └── remediate-aws-222222222222-us-east-1.tf        ← 2
 ```
@@ -125,7 +125,10 @@ and unencrypted is one `import` and one `resource` block applying both fixes, la
 policy it carries and filed under the riskiest of their safety tiers. That is not cosmetic: two
 `import` blocks naming the same resource are *valid configuration* — `validate` passes — and fail
 only at `plan`/`apply` against live infrastructure. Nothing in this sample merges, because no two of
-the five shipped recipes target the same resource type.
+the six shipped AWS recipes target the same resource type — including the two that both act on
+`acme-web-assets-use1`: versioning writes `aws_s3_bucket_versioning`, Block Public Access writes
+`aws_s3_bucket_public_access_block`, so they are two independent pairs rather than one merged block.
+The Azure sample does exercise the merge, where three recipes share `azurerm_storage_account`.
 
 **`TODO` placeholders are expected, and you must complete them.** Two of the blocks in this sample
 contain them, and the run says so. The AWS provider *parser* requires a few arguments a finding
@@ -184,16 +187,38 @@ These notes are derived from the recipe's structured fields (`reversible`, `cost
 `blocks_iac_destroy`), not hand-written per recipe, so every artifact carries the same warning in
 the same words and no author can forget one.
 
+**One warning is authored rather than derived, and it is marked `!!`.** Those four fields cannot
+express every consequence: Block Public Access is reversible, free and applied in place, so it
+derives to `safest` and its banner says so — while applying it stops anonymous reads immediately. A
+recipe can therefore promote a single caveat to render inline beside the command, and the sample
+contains one:
+
+```bash
+# POLICY: S3 Bucket block public access is not enabled
+# Policy ID: 80b8e9b6-c285-4939-b115-452dfd65bbcc
+# Resources: 1
+#
+# !! CONFIRM THIS BUCKET IS NOT MEANT TO BE PUBLIC BEFORE APPLYING. If it serves a
+#    static website, a published dataset or any anonymously read content, that access
+#    stops immediately. This tool cannot tell intentional public access from accidental:
+#    a Tenable Cloud Security exception does not travel in a findings export, so scope
+#    your export rather than relying on the tool.
+```
+
+Every other caveat stays in `README.md` — repeating a paragraph of reference text beside each of
+hundreds of commands is what made comments most of the output. `!!` is reserved for the case where
+relocating it would leave a reassuring banner over a command that withdraws access.
+
 ### What the safety level actually gates
 
 The same input at each level:
 
 | `--safety-level` | Written | Withheld | What is withheld |
 | --- | --- | --- | --- |
-| `safest` (default) | 1 | 5 | Everything irreversible, cost-scaled, or that blocks `tofu destroy` |
-| `caution` (this sample) | 6 | 0 | — |
+| `safest` (default) | 2 | 5 | Everything irreversible, cost-scaled, or that blocks `tofu destroy` |
+| `caution` (this sample) | 7 | 0 | — |
 
-The default is not a suggestion — you get one CloudTrail remediation and an explicit note naming
+The default is not a suggestion — you get the two `safest` remediations and an explicit note naming
 the flag that would include the rest. Withheld work is always counted; a silent cap would read as
 "nothing else to do".
 
@@ -215,6 +240,6 @@ The committed sample was checked with real tools rather than substring assertion
 ## What this sample cannot tell you
 
 The account ids (`111111111111`, `222222222222`) and resource names are synthetic. The **policy
-UUIDs are real** and match the shipped recipes, so a finding you export for one of these five
+UUIDs are real** and match the shipped recipes, so a finding you export for one of these six
 policies will match. Everything else here is illustrative, and no command in `sample-output/` was
 ever run against AWS — see [SECURITY.md](../SECURITY.md) for why that boundary is not configurable.

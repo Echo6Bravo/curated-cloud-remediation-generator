@@ -87,7 +87,7 @@ credential-shaped placeholder into generated configuration. And the API axis's o
 
 The name is literal, and each word in it is a limitation worth stating plainly.
 
-**Curated.** Coverage is partial by design and will stay that way. This release ships **5 recipes**
+**Curated.** Coverage is partial by design and will stay that way. This release ships **6 recipes**
 for AWS and **8 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
 clouds, and most of them are *scriptable* — but scriptable is not the same as safe to script
 universally, and the gap between those two is where an automated remediation hurts someone. Every
@@ -246,9 +246,19 @@ Two consequences of this that are easy to miss:
 - **Warnings stay inline, next to the thing they warn about.** Every irreversibility note, cost
   note, and reversal command is emitted in the artifact itself, not only here. A warning in a
   different file is a warning that gets skipped.
+- **A tier is derived, so one warning is authored.** `safest` is computed from four fields —
+  reversible, ongoing cost, data-path impact, whether it blocks `tofu destroy` — and none of them
+  means "withdraws access something is using today". S3 Block Public Access is reversible, free and
+  applied in place, so it derives to `safest` honestly, and it stops anonymous reads the moment it
+  runs. A recipe can therefore promote one caveat to render inline beside the command, marked `!!`.
+  Six recipes across both clouds use it; every other caveat lives in the run's `README.md`, because
+  repeating a paragraph of reference text beside each of hundreds of commands is what made comments
+  most of the output. The bar is stated and tested: `caution` and `disruptive` recipes may not use
+  it — their banner already says to read every note — and a promoted caveat may not paraphrase a note
+  the four fields already produce.
 
-Of the 5 shipped AWS recipes, **1 is `safest`** and **4 are `caution`** — so a default run is
-conservative, and the majority of the AWS set requires you to opt in explicitly. Of the 8 shipped
+Of the 6 shipped AWS recipes, **2 are `safest`** and **4 are `caution`** — so a default run is
+conservative, and most of the AWS set requires you to opt in explicitly. Of the 8 shipped
 Azure recipes, **8 are `safest`**, which is not a claim that Azure is safer: it is what a first
 recipe set looks like when the riskier candidates are deferred rather than reclassified. The one
 Azure remediation that would have landed in a higher tier was excluded instead — see
@@ -426,9 +436,34 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 
 ## Known limitations
 
-- **Coverage is 5 AWS policies and 8 Azure policies.** If your finding's policy has no recipe, it is
+- **Coverage is 6 AWS policies and 8 Azure policies.** If your finding's policy has no recipe, it is
   reported as unsupported (`-v` lists them). That is the honest answer, not a gap to be filled by
   guessing.
+- **This tool does not account for any exceptions you may have configured in Tenable Cloud Security.**
+  Exceptions, suppressions and accepted-risk decisions live in the platform and **do not survive a
+  findings export**. A `Finding` carries a policy id, a resource id, a region and an account — there
+  is no field for an exception, so no recipe can consult one, and every finding you supply is treated
+  as one you intend to fix.
+
+  This is a deliberate boundary rather than an oversight. The tool provides verified recipes for
+  common, safely scriptable misconfigurations **without consulting your specific environment**: it
+  holds no cloud credentials and makes no cloud API calls, so it cannot read your exception list, your
+  resource tags, or the intent behind a configuration. It reasons only about the cloud provider's
+  published API surface and the finding you hand it. The practical consequence is that **scoping the
+  export is yours to do** — if a resource is excepted because its exposure is intentional, keep that
+  finding out of the input rather than relying on the tool to infer intent.
+
+  This holds for AWS, for Azure, and for any cloud added later. It is a property of findings ingest,
+  which is shared, so it is stated on `Finding` itself in
+  [`src/remgen/core/model.py`](./src/remgen/core/model.py) rather than in a provider, and a CI gate
+  keeps this section and that docstring in agreement.
+
+  It matters most for remediations that withdraw access existing callers may be using, where an
+  exception is the ordinary case rather than an exotic one: **S3 Block Public Access** on a
+  deliberately public static site or published dataset, Azure storage **HTTPS-only** or **minimum
+  TLS** against a legacy client, **SFTP disable** against a running transfer job. Those recipes put
+  the intent question in their caveats and in the generated artifact, which is the only place the tool
+  can raise it.
 - **Azure's coverage is 2 services, and one gap is deliberate and named.**
   `azremgen` covers seven storage-account settings and SQL database TDE. Two planned recipes were
   dropped rather than approximated, and both remain visible as unsupported policies:
