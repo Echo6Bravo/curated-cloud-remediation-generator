@@ -337,7 +337,13 @@ def test_the_rendered_command_targets_the_finding_s_subscription():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("recipe", azure_recipes(), ids=lambda r: r.policy_id)
+#: Filtered rather than skipped inside the test: CI fails on any skip, because a skipped
+#: test is coverage a reader assumes they have. The floor below is what keeps the filter
+#: honest.
+_AZURE_PROMOTERS = [r for r in azure_recipes() if r.critical_caveats]
+
+
+@pytest.mark.parametrize("recipe", _AZURE_PROMOTERS, ids=lambda r: r.policy_id)
 def test_shipped_critical_caveats_render_inline_in_the_azure_script(recipe):
     """The shipped Azure set, not a constructed recipe.
 
@@ -351,8 +357,6 @@ def test_shipped_critical_caveats_render_inline_in_the_azure_script(recipe):
     Asserted against unwrapped text: ``comment_block`` wraps caveat prose to a column,
     so a present caveat is not a literal substring of the output.
     """
-    if not recipe.critical_caveats:
-        pytest.skip(f"{recipe.policy_id} declares no critical caveats")
     pairs = [(recipe, _finding())]
     flat = re.sub(r"\s+", " ", re.sub(r"(?m)^\s*#\s?", "", _script(pairs)))
     for caveat in recipe.critical_caveats:
@@ -360,12 +364,13 @@ def test_shipped_critical_caveats_render_inline_in_the_azure_script(recipe):
 
 
 def test_at_least_one_shipped_azure_recipe_exercises_the_test_above():
-    # The parametrized test skips per recipe, so a set that promoted nothing would
-    # report all-skipped as success. This is the floor that makes it real.
-    promoted = [r for r in azure_recipes() if r.critical_caveats]
-    assert len(promoted) >= 5, (
-        f"only {len(promoted)} Azure recipe(s) promote a critical caveat; 5 did when this "
-        f"was written, so the test above is now largely skipped"
+    # The parametrized test above is filtered to promoters, so a set that promoted
+    # nothing would collect zero cases and report success. This is the floor that makes
+    # it real. Five rather than one: five Azure recipes withdraw access today, and a
+    # floor of one would be satisfied while four regressed.
+    assert len(_AZURE_PROMOTERS) >= 5, (
+        f"only {len(_AZURE_PROMOTERS)} Azure recipe(s) promote a critical caveat; 5 did "
+        f"when this was written, so the test above now covers less than it claims"
     )
 
 
