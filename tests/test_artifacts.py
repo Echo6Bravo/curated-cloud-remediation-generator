@@ -150,7 +150,25 @@ def test_safety_notes_stay_in_the_artifacts_not_only_the_readme(recipe):
             assert note in hcl, f"safety note missing from the HCL: {note!r}"
 
 
-@pytest.mark.parametrize("recipe", all_recipes(), ids=lambda r: r.policy_id)
+#: Only the recipes that promote something. Parametrizing over the whole registry and
+#: skipping the rest would be the obvious shape and is wrong here: CI fails the build on
+#: *any* skip, on the grounds that a skipped test is coverage a reader assumes they have.
+#: A filtered list keeps that promise, and
+#: ``test_at_least_one_recipe_exercises_the_test_above`` is what stops the filter from
+#: silently emptying.
+_PROMOTERS = [r for r in all_recipes() if r.critical_caveats]
+
+
+def test_at_least_one_recipe_exercises_the_test_above():
+    # Without this, a registry that promoted nothing would collect zero parametrized
+    # cases and report success for a mechanism no shipped recipe uses.
+    assert _PROMOTERS, (
+        "no AWS recipe promotes a critical caveat, so the parametrized test below "
+        "collects nothing; S3 Block Public Access did when this was written"
+    )
+
+
+@pytest.mark.parametrize("recipe", _PROMOTERS, ids=lambda r: r.policy_id)
 def test_critical_caveats_reach_every_artifact_and_the_readme(recipe):
     """A critical caveat is the one authored line that must not be relocated.
 
@@ -162,8 +180,6 @@ def test_critical_caveats_reach_every_artifact_and_the_readme(recipe):
     exactly that, and this test is what makes it a channel rather than a field nobody
     renders: it must be in the script, in the HCL and in the README.
     """
-    if not recipe.critical_caveats:
-        pytest.skip(f"{recipe.policy_id} declares no critical caveats")
     pairs = _pairs(recipe)
     script = _uncommented(render_cli_script(pairs, version=VERSION, generated_at=STAMP))
     readme = _readme(pairs)
