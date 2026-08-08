@@ -50,8 +50,8 @@ pass over them should say so in this section rather than quietly changing the to
 
 | Bucket | Policies | Share |
 | --- | --- | --- |
-| Shipped | 5 | 2.1% |
-| Write a recipe now | 25 | 10.5% |
+| Shipped | 6 | 2.5% |
+| Write a recipe now | 24 | 10.1% |
 | Blocked on a prerequisite | 31 | 13.1% |
 | Documented rejection | 176 | 74.3% |
 | **Total** | **237** | |
@@ -70,6 +70,7 @@ expressed as a single idempotent, reversible, per-resource API call, and the rea
 | `468d7976-445f-44c2-b9fb-45fb1005f373` | DynamoDB Table delete protection is not enabled | Data |
 | `995e8d78-940a-45bf-bac1-61a1fdb00d7a` | KMS Key automatic key rotation is not enabled | Data |
 | `4d6662cd-9f34-41eb-b152-f24c692d4fbf` | RDS Instance delete protection is not enabled | Data |
+| `80b8e9b6-c285-4939-b115-452dfd65bbcc` | S3 Bucket block public access is not enabled | Data |
 | `284b1210-a31e-48ce-97af-f4d825ef132d` | S3 Bucket versioning is not enabled | Data |
 
 ## Write a recipe now
@@ -83,13 +84,13 @@ the same axis `ROADMAP.md` gives for the module split.
 | 1 | ec2 | new | 4 | 8-11 h | IMDSv2 closes SSRF-to-credential-theft; the snapshot/image `reset-*-attribute` calls de-publicise data. All four single-call, reversible, free. |
 | 2 | rds | extend | 4 | 5-7 h | Patterns already proven in the module. Cluster delete protection mirrors the shipped instance recipe almost exactly. |
 | 3 | docdb + neptune | new (paired) | 5 | 7-9 h | Both RDS-API-shaped, so the rds batch does most of the reasoning. Distinct HCL resource types and import ids is the residual cost. |
-| 4 | s3 | extend | 1 | 3-4 h | One recipe, disproportionate impact. `aws_s3_bucket_public_access_block` is a clean separate resource. |
+| 4 | s3 | extend | shipped | -- | **Landed.** One recipe, as listed. All four Block Public Access flags are set: the policy asks whether BPA is enabled, and a subset would emit a command that runs cleanly and leaves the finding open. Ships `safest` because every field that derives `caution` is honestly false -- see the module comment for why the tier cannot express "reversible, free, and may still cut off your public website", and what would have to change to fix that. |
 | 5 | apigateway | new | 4 | 9-12 h | Four recipes, one module. Execution logging is adjacent to R4 and moves to rejection if it provisions ingest rather than writing to an existing group. |
 | 6 | kms + acm | extend + new | 2 | 4-6 h | Small. The KMS entry needs a written note on why two near-identical policy ids get one recipe rather than two. |
 | 7 | athena | new | 2 | 4-6 h | `update-work-group` takes a nested config struct; becomes R6 if partial update is not honoured. |
 | 8 | elbv2 + elasticache + dms | 3 new | 3 | 8-11 h | Lowest priority: three module setups for three recipes, the worst overhead-to-coverage ratio in the set. The ELB listener policy may fall to P1 on old-client breakage. |
 
-**Total: 25 recipes, 48-66 h**, plus 6-9 h for this document's rejection register once the
+**Total: 24 recipes, 45-62 h**, plus 6-9 h for this document's rejection register once the
 classes are written against each member. Roughly 7-9 working days.
 
 ### Basis for the estimates
@@ -146,7 +147,6 @@ them. Treat the ranges as the width of that ignorance.
 
 | Policy id | Policy | Category |
 | --- | --- | --- |
-| `80b8e9b6-c285-4939-b115-452dfd65bbcc` | S3 Bucket block public access is not enabled | Data |
 
 **`recipes/apigateway.py`**
 

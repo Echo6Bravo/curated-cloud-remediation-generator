@@ -141,10 +141,12 @@ _HTTPS_ONLY = Recipe(
     data_path_impact=False,
     cost_impact=CostImpact.NONE,
     blocks_iac_destroy=False,
-    caveats=(
+    critical_caveats=(
         "Any client still connecting over plain HTTP will fail after this change. That "
         "traffic is unencrypted today, which is the finding -- but confirm no legacy "
         "client depends on it before applying fleet-wide.",
+    ),
+    caveats=(
         "The azurerm default for this argument is already true, so a workspace that "
         "manages this account without naming the argument is not the source of the "
         "drift; the account was most likely created outside IaC.",
@@ -189,10 +191,12 @@ _MIN_TLS = Recipe(
     data_path_impact=False,
     cost_impact=CostImpact.NONE,
     blocks_iac_destroy=False,
-    caveats=(
+    critical_caveats=(
         "A client whose TLS stack cannot negotiate 1.2 will fail. In practice that "
         "means very old SDK versions and .NET Framework applications with TLS 1.2 not "
         "explicitly enabled.",
+    ),
+    caveats=(
         "The reverse command sets TLS1_0, which restores the weakest setting rather "
         "than whatever the account had before. If it was TLS1_1, pass that instead.",
         "Reversing via the HCL is not possible: `az` accepts TLS1_0 and TLS1_1, but "
@@ -241,7 +245,7 @@ _CROSS_TENANT_REPLICATION = Recipe(
     data_path_impact=False,
     cost_impact=CostImpact.NONE,
     blocks_iac_destroy=False,
-    caveats=(
+    critical_caveats=(
         "An existing object replication policy whose source or destination is in "
         "another tenant stops replicating. Check for cross-tenant replication policies "
         "on this account before applying; there is no warning from the API.",
@@ -292,10 +296,12 @@ _SFTP_DISABLED = Recipe(
     data_path_impact=False,
     cost_impact=CostImpact.NONE,
     blocks_iac_destroy=False,
-    caveats=(
+    critical_caveats=(
         "Any SFTP client using this account stops working immediately. Unlike the "
         "HTTPS-only finding, that traffic is not insecure by itself -- SFTP is "
         "encrypted -- so confirm no data-transfer job depends on it before applying.",
+    ),
+    caveats=(
         "SFTP requires hierarchical namespace, so this recipe is a no-op on accounts "
         "that never had it enabled. Those accounts do not raise the finding.",
         "Local users are the identity mechanism SFTP uses. Disabling SFTP leaves any "
@@ -340,9 +346,11 @@ _LOCAL_USER_DISABLED = Recipe(
     data_path_impact=False,
     cost_impact=CostImpact.NONE,
     blocks_iac_destroy=False,
-    caveats=(
+    critical_caveats=(
         "Every local user on this account loses the ability to authenticate. If SFTP "
         "is in use, this breaks it -- local users are how SFTP clients sign in.",
+    ),
+    caveats=(
         "Reversing restores the setting, and the local user definitions survive it. "
         "The users' keys and passwords are not deleted by either direction.",
     ),

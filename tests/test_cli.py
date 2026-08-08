@@ -1120,7 +1120,13 @@ def test_verify_passes_all_axes_against_the_real_toolchain(env, capsys, real_pro
     code = _run(["verify", "--provider-schema", str(real_provider_schema_path)])
     captured = capsys.readouterr().out
     assert code == 0, captured
-    assert "All 5 HCL target(s) match the current provider schema." in captured
+    # Derived, not typed: this said "All 5" and went stale the moment a sixth recipe
+    # landed, failing for a reason that had nothing to do with the three axes combining.
+    # The anti-vacuity assert is the point of keeping a number here at all -- a count of
+    # zero would make the HCL line trivially true while the axis examined nothing.
+    with_hcl = sum(1 for r in all_recipes() if r.hcl is not None)
+    assert with_hcl, "no recipe has an HCL target; the HCL axis would examine nothing"
+    assert f"All {with_hcl} HCL target(s) match the current provider schema." in captured
     assert "render commands the CLI accepts" in captured
 
 

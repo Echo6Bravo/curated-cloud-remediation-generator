@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import string
 import textwrap
+from collections.abc import Sequence
 
 from remgen.core.model import (
     Finding,
@@ -24,6 +25,11 @@ from remgen.core.model import (
     UnsafeIdentifierError,
     validate_identifier,
 )
+
+#: Prefix marking a caveat that must be read before the command below it runs. Two
+#: characters and no letters, so it survives being scanned rather than read, and so
+#: `comment_block` can recognise it when hanging continuation lines.
+CRITICAL_CAVEAT_MARKER = "!! "
 
 #: Placeholders a template may reference, mapped to the Finding attribute used.
 _ALLOWED_FIELDS = {
@@ -124,8 +130,15 @@ def comment_block(lines: list[str], prefix: str = "# ", width: int = 88) -> str:
             out.append(line)
             continue
         indent = line[: len(line) - len(stripped)]
-        # Continuation lines of a bullet align past the "- " marker.
-        hang = indent + ("  " if stripped.startswith("- ") else "")
+        # Continuation lines of a marked line align past its marker, so a wrapped
+        # bullet or critical caveat stays visually attached to the one it belongs to.
+        # Without the hang, a five-line caveat's tail is indistinguishable from the
+        # unmarked notes below it, which is precisely the line that must stand out.
+        hang = indent
+        for marker in ("- ", CRITICAL_CAVEAT_MARKER):
+            if stripped.startswith(marker):
+                hang = indent + " " * len(marker)
+                break
         wrapped = textwrap.wrap(
             stripped,
             width=body,
@@ -180,6 +193,25 @@ def tier_banner(tier: SafetyTier) -> str:
     return f"# {bar}\n# {label}\n# {bar}"
 
 
+def critical_caveat_lines(caveats: Sequence[str]) -> list[str]:
+    """Prefix each critical caveat so it is distinguishable from description.
+
+    A marker rather than a heading: :func:`comment_block` wraps prose to the comment
+    width, and a heading followed by wrapped paragraphs puts the marker several lines
+    above the sentence that matters. Prefixing each caveat keeps the signal attached
+    to its own text, and the leading indent means continuation lines stay visually
+    under the marker instead of aligning with ordinary notes.
+
+    Shared so the shell generators, the HCL generator and the merged-block path all
+    mark them identically. Three formats inventing three markers is how a reader
+    learns to ignore one of them.
+    """
+    out: list[str] = []
+    for caveat in caveats:
+        out.append(f"{CRITICAL_CAVEAT_MARKER}{caveat}")
+    return out
+
+
 def recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
     """Return the comment lines that describe a recipe, independent of any finding.
 
@@ -202,10 +234,21 @@ def recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
     identical for every occurrence, so a run spanning many scopes would repeat it
     hundreds of times; it is written once in the run's README instead, and the
     pointer below is what makes that a relocation rather than an omission.
+
+    ``critical_caveats`` is the exception, and it exists because that split has one
+    blind spot. Safety notes are derived from four structured fields, so a warning
+    the fields cannot express has no way to reach the artifact and lands in the
+    README with the reference material -- under a banner that may well read SAFEST.
+    S3 Block Public Access is exactly that: reversible, free, in-place, and it stops
+    anonymous reads the instant it applies. Those lines are rendered here, prefixed
+    so they read as a stop sign rather than as more description.
     """
     notes: list[str] = [f"POLICY: {recipe.policy_title}", f"Policy ID: {recipe.policy_id}"]
     if count is not None:
         notes.append(f"Resources: {count}")
+    if recipe.critical_caveats:
+        notes.append("")
+        notes.extend(critical_caveat_lines(recipe.critical_caveats))
     if recipe.safety_notes:
         notes.append("")
         notes.extend(recipe.safety_notes)
@@ -214,9 +257,11 @@ def recipe_notes(recipe: Recipe, *, count: int | None = None) -> list[str]:
 
 
 __all__ = [
+    "CRITICAL_CAVEAT_MARKER",
     "TemplateError",
     "UnsafeIdentifierError",
     "comment_block",
+    "critical_caveat_lines",
     "group_by_policy",
     "recipe_notes",
     "render_template",
