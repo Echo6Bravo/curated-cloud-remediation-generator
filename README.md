@@ -16,7 +16,7 @@ run them.
 
 ```bash
 awsremgen recipes                                            # what is supported, and how risky each is
-awsremgen verify                                             # do the recipes still match upstream, on all three axes?
+awsremgen verify                                             # do the recipes still match upstream, on all four axes?
 awsremgen generate --findings findings.json --out ./artifacts
 ```
 
@@ -138,9 +138,9 @@ artifact is fixed and inspectable:
    two `import` blocks naming the same resource are *valid configuration* — `validate` passes — and
    fail only at `plan`/`apply` against live infrastructure, so the generator merges them instead and
    refuses to emit anything if two recipes disagree about a value.
-4. **`awsremgen verify` re-checks every recipe against all three upstreams it depends on**, because
+4. **`awsremgen verify` re-checks every recipe against all four upstreams it depends on**, because
    they are maintained by different people and rot independently — see
-   [What `verify` actually checks](#what-verify-actually-checks). All three always run, so one
+   [What `verify` actually checks](#what-verify-actually-checks). All four always run, so one
    broken upstream cannot hide a second behind it.
 5. **`awsremgen policies` diffs the policy catalog** against a local snapshot from your last run.
    New policies are **reported, never auto-remediated** — an unreviewed policy has no recipe, and
@@ -148,21 +148,30 @@ artifact is fixed and inspectable:
 
 ## What `verify` actually checks
 
-A recipe depends on **three** upstreams, owned by three different projects, which change on their own
+A recipe depends on **four** upstreams, owned by four different projects, which change on their own
 schedules. Checking one and reporting a pass is how a shipped artifact rots in silence, so `verify`
-checks all three and always reports all three:
+checks all four and always reports all four:
 
 | Axis | Source | What breaks if it moves | Exit |
 | --- | --- | --- | --- |
 | **API operation and parameters** | AWS service models (`service-2.json`, from your AWS CLI v2 or botocore install) | The operation or a parameter was renamed — AWS rejects the call | `3` |
 | **HCL resource type and arguments** | `hashicorp/aws` provider schema (`tofu providers schema -json`) | The generated `.tf` no longer loads, or a `TODO` stub claims to be required when it is not | `7` |
 | **Rendered `aws` command** | The AWS CLI's own autocomplete index (`awscli/data/ac.index`) | The subcommand or a flag was renamed — the generated script fails with "Unknown options" | `8` |
+| **Policy id** | Your Tenable policy catalog export (`--catalog`) | The policy was retired, so the recipe matches zero findings and silently never fires again | `9` |
 
-Why three rather than one: the AWS CLI is free to rename `--deletion-protection-enabled` while
+Why four rather than one: the AWS CLI is free to rename `--deletion-protection-enabled` while
 `dynamodb.UpdateTable` keeps its `DeletionProtectionEnabled` member, and the Terraform provider is
 free to rename an argument while both of those are untouched. Each of those breaks a file this tool
-already wrote, and each is invisible to the other two checks. The reverse command in each artifact —
+already wrote, and each is invisible to the other checks. The reverse command in each artifact —
 the one someone runs in a hurry, having just broken something — is checked too.
+
+The fourth axis is the odd one out, and the reason it exists is the failure mode it catches. The other
+three ask a cloud whether a remediation is still *correct*; this one asks Tenable whether the finding
+still *exists*. A recipe keyed to a retired policy id passes all three cloud axes perfectly and then
+matches nothing, forever — which produces no error, no warning, and an empty artifact set that looks
+exactly like a clean estate. It is exit `9`, last in precedence, because a wrong API call runs against
+live infrastructure while this one merely never runs at all. It needs `--catalog`: there is no live
+Tenable adapter in this tool, so without an export the axis reports that it did not run.
 
 The flag names are read from the CLI's own index rather than derived from the API member names.
 Derivation looks like kebab-casing and is not (`DBInstanceIdentifier` → `--db-instance-identifier`),
@@ -380,6 +389,28 @@ something that produces commands you will run against production.
 
 Pinned dev ranges live in `pyproject.toml` under `[project.optional-dependencies]`.
 
+### The provider version the generated HCL asks for
+
+Each `.tf` file carries a commented `required_providers` block, and the interesting half is the
+**upper** bound. Both providers ship a major roughly annually and both relocate arguments when they
+do — `hashicorp/aws` v5 to v6 moved the `aws_s3_bucket` sub-arguments, which is the resource type two
+of these recipes write. With a floor and no ceiling, `init` resolves whatever is newest on the day
+*you* run it, so a file generated against a verified provider breaks in your terminal against a major
+nobody tested — and reads as a defect in the file rather than as an untested combination.
+
+The ceiling is therefore the *next* major, exclusive, taken from a per-cloud value that records what
+was actually verified: `hashicorp/aws` at 6.x and `hashicorp/azurerm` at 5.x today. Raising either is a
+claim that the recipes were re-verified against the newer major, so it moves in the commit that does
+one. The two clouds differ, which is why the value is per cloud rather than shared.
+
+The floor is a different claim from the ceiling, and the block says so when they differ: it is the
+release in which each argument first existed (`>= 5.0` for AWS), which is older than what was
+verified — so an AWS file's range admits a 5.x nobody tested, and the block tells you to pin `6.x` if
+you want only the verified one. Azure's range is wholly inside its verified major, so it carries no
+such note. The whole block is commented for the same reason the `provider` block is: a module may hold
+exactly one `required_providers` configuration, and these files are meant to be dropped into a
+workspace that already has one.
+
 ## Install
 
 ```bash
@@ -399,7 +430,7 @@ works from a clone.
 # 1. See what exists and how risky it is, before generating anything
 awsremgen recipes
 
-# 2. Confirm the recipes still match upstream on your machine, on all three axes
+# 2. Confirm the recipes still match upstream on your machine, on all four axes
 awsremgen verify --provider-schema /tmp/schema.json
 
 # 3. Generate. Default safety level is 'safest'; default output is ./artifacts
@@ -502,7 +533,7 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 - **No boto3/Python-SDK output format.** It would be a third rendering of the same API call with
   no capability the CLI script lacks, and each additional format is another surface that can drift
   from the service model.
-- **`verify` cannot check semantics** — on all three axes it confirms that names still exist and
+- **`verify` cannot check semantics** — on all four axes it confirms that names still exist and
   shapes still match. It cannot confirm that AWS's *behavior* is unchanged, that a flag still means
   what it meant, or that a provider argument still maps to the same API field.
 - **`verify`'s HCL axis needs a schema you generate.** Producing one downloads the provider, and a

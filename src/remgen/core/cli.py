@@ -46,26 +46,33 @@ Exit codes, so a scheduler can branch on them:
   because that means the cloud's API changed under a correct recipe set, while this
   means the tool is internally inconsistent; the two need different fixes.
 
-  ``verify`` runs all three of its axes whatever any one of them reports, so the
+  ``verify`` runs all four of its axes whatever any one of them reports, so the
   code below is the most urgent verdict rather than the first: ``4`` (an axis could
   not run, making every other verdict incomplete), then ``3``, then ``7``, then
-  ``8``. The output always describes all three.
+  ``8``, then ``9``. The output always describes all four.
 * ``7`` -- a recipe's HCL target no longer matches the Terraform/OpenTofu provider
   schema: an argument was renamed or removed, a resource type disappeared, or the
   recipe claims the provider requires something it does not. Separate from ``3``
   because the two halves of a recipe rot independently and are fixed in different
   places, and separate from ``6`` because the recipe set is self-consistent -- it is
-  the provider that moved. Only ``verify`` returns it. Note that a ``verify`` run
-  reporting ``3`` has not yet reached the HCL half, so fixing API drift can reveal
-  this on the next run.
+  the provider that moved. Only ``verify`` returns it.
 * ``8`` -- a recipe renders a console command the cloud's CLI no longer accepts: a
   renamed or removed subcommand or flag. Separate from ``3`` because a CLI can rename
   a flag while the underlying API operation is untouched, and the generated script
   runs the CLI, not the API.
+* ``9`` -- a recipe is keyed to a policy id the Tenable catalog no longer contains, so
+  it matches no findings and never fires again. Last in precedence and the most easily
+  missed: the other three mean a shipped artifact does the wrong thing, while this one
+  means an artifact is never produced at all, which looks exactly like a clean estate.
+  Only ``verify`` returns it, and only when given ``--catalog`` -- there is no live
+  Tenable adapter (see :mod:`remgen.core.sources`), so without an export the axis
+  reports that it did not run rather than passing.
 * ``130`` -- interrupted.
 
-Note that ``3``, ``7`` and ``8`` do not mean the other two axes passed -- only that
-this one is the most urgent of those that failed. Read the output, not just the code.
+Note that ``3``, ``7``, ``8`` and ``9`` do not mean the other three axes passed -- only
+that this one is the most urgent of those that failed. Every axis runs on every
+``verify`` invocation, so the output describes all four regardless of the code. Read
+the output, not just the code.
 """
 
 from __future__ import annotations
@@ -496,6 +503,8 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
                     unit=unit,
                     command=provider.command,
                     scope_block=provider.hcl_scope_block,
+                    provider_source=provider.tf_provider_source,
+                    verified_major=provider.tf_provider_verified_major,
                 ),
                 False,
             )
@@ -884,9 +893,10 @@ def _verify_cli_axis(provider: Provider) -> int:
     to change on its own -- see :mod:`remgen.providers.aws.cli_surface`.
 
     Exit 8 on failure, distinct from ``3`` and ``7`` for the same reason those are
-    distinct from each other: three axes rot independently, are fixed in three
-    different places, and a canary should be able to say which one moved without
-    parsing output.
+    distinct from each other: the axes rot independently, are fixed in different
+    places, and a canary should be able to say which one moved without parsing output.
+    That argument is what later added ``9`` for the policy axis rather than folding it
+    in here -- see :func:`_verify_policy_axis`.
     """
     if provider.verify_cli_surface is None:
         # Said out loud rather than returned silently. `Provider` documents this case
@@ -896,8 +906,8 @@ def _verify_cli_axis(provider: Provider) -> int:
         # than passed.
         print(
             f"CLI: not checked -- {provider.command} has no CLI-surface verifier yet.\n"
-            f"  --   This axis did not run. It is one of three, and a clean run of the "
-            f"other two does not cover it."
+            f"  --   This axis did not run. It is one of four, and a clean run of the "
+            f"other three does not cover it."
         )
         return 0
 
@@ -998,20 +1008,161 @@ def _verify_api_axis(provider: Provider) -> int:
     return 0
 
 
-def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
-    """Check every recipe against all three upstreams it depends on.
+def _verify_policy_axis(args: argparse.Namespace, provider: Provider) -> int:
+    """Check that every recipe's policy id still exists in the Tenable catalog.
 
-    All three axes always run, even when an earlier one has already failed. An
+    The fourth axis, and the only one whose upstream is Tenable rather than the cloud.
+    It closes a **false negative** the other three cannot see: a recipe whose API call,
+    provider arguments and CLI flags all verify perfectly is still dead if the policy id
+    it is keyed to has been retired, because no export will ever contain that id again.
+    Nothing fails, nothing warns, and the recipe silently matches zero findings -- the
+    one failure mode that looks exactly like a clean estate.
+
+    Runs only when given a catalog export. There is deliberately no live Tenable adapter
+    in this project (see :mod:`remgen.core.sources`), so this axis has no way to fetch
+    one, and an axis that invented a catalog would be worse than one that abstains.
+    Without ``--catalog`` it reports "not run" and returns 0, matching how the HCL axis
+    behaves without ``--provider-schema``: the axis did not run, and the run says so
+    rather than counting silence as a pass.
+
+    Exit 9 on drift, distinct from 3/7/8 for the same reason those differ from each
+    other -- a canary should name which upstream moved without parsing output, and this
+    one is fixed by re-triaging a policy rather than by editing a command.
+    """
+    recipes = provider.all_recipes()
+    catalog_path = getattr(args, "catalog", None)
+
+    print(f"Policies: checking {len(recipes)} recipe(s) against the policy catalog.")
+    if catalog_path is None:
+        print(
+            "  --   not checked -- no --catalog given, and this tool has no live "
+            "Tenable adapter\n"
+            "       to fetch one. This axis did NOT run: a retired policy id would "
+            "not be\n"
+            f"       reported. {provider.catalog_export_hint}"
+        )
+        return 0
+
+    try:
+        result = JsonFileSource(policies_path=catalog_path).load()
+    except SourceError as exc:
+        # Unreadable input is "could not check", not "checked and passed". Exit 4 for
+        # the same reason the other axes use it: a blind canary must not read green.
+        print(f"  ?    could not read {catalog_path}: {exc}")
+        return 4
+
+    print(f"Catalog: {catalog_path} ({len(result.policies)} policy/policies)\n")
+    if _no_recipes_to_verify(provider):
+        return 0
+    if not result.policies:
+        # An export that parsed to nothing would mark every recipe as retired, which is
+        # a wrong answer with high confidence -- the worst kind. It means the export is
+        # empty or the wrong shape, so it is reported as unrunnable.
+        print(
+            f"  ?    the catalog parsed to zero policies, so every recipe would look "
+            f"retired.\n"
+            f"       Treated as 'could not check' rather than as {len(recipes)} retired "
+            f"policies."
+        )
+        return 4
+
+    live = {p.policy_id: p for p in result.policies}
+    missing = 0
+    renamed = 0
+    # Printed before the per-recipe verdicts, not after, because a rejected record is
+    # the one thing that turns this axis into a false positive: a policy the loader
+    # could not parse is absent from `live` and reads as retired. The rejections are
+    # named so a FAIL below is explainable rather than mysterious.
+    if result.rejections:
+        print(
+            f"  !    {len(result.rejections)} catalog record(s) were rejected by the "
+            f"loader and are\n"
+            f"       absent from the comparison below, so a policy among them would be "
+            f"reported\n"
+            f"       as retired. Check these before acting on any FAIL:"
+        )
+        for rejection in result.rejections[:20]:
+            print(f"         [record {rejection.index}] {_clip(rejection.reason)}")
+        if len(result.rejections) > 20:
+            print(f"         ... and {len(result.rejections) - 20} more")
+        print()
+    for recipe in recipes:
+        policy = live.get(recipe.policy_id)
+        if policy is None:
+            missing += 1
+            mark, note = "FAIL", "not in the catalog -- retired, or the wrong cloud's export"
+        elif policy.title != recipe.policy_title:
+            # Not a failure. A retitled policy still matches findings, so the recipe
+            # works; what breaks is the artifact's own label, which is what a reviewer
+            # reads to decide whether to apply it. Reported so it gets corrected, and
+            # kept out of the exit code so it cannot mask a retirement.
+            renamed += 1
+            mark, note = "warn", f"title upstream is now {policy.title!r}"
+        else:
+            mark, note = "ok  ", "in the catalog"
+        print(f"  {mark} {recipe.policy_id:<38} {note}")
+
+    print()
+    if renamed:
+        print(
+            f"{renamed} recipe(s) carry a title the catalog has since changed. The "
+            f"remediation still applies; the label in generated artifacts is stale."
+        )
+    if missing == len(recipes):
+        # Every single recipe missing against a catalog that *did* contain policies is
+        # the signature of the wrong export -- running `awsremgen verify` with the Azure
+        # catalog produces exactly this. Found by doing it. Reporting 9 there would be a
+        # confident wrong answer whose stated fix (re-triage every recipe) is unrelated
+        # to the actual one (pass the other file), so it is downgraded to "could not
+        # check": the two causes are indistinguishable from this data, and 4 says so
+        # while still outranking every other axis.
+        #
+        # For a cloud with exactly one recipe this also catches a genuine single
+        # retirement, reporting 4 where 9 would be right. Accepted: the two are
+        # *identical* in that case, so no rule could separate them, and the message
+        # names re-triage as one of the two possibilities. It is still not a pass.
+        print(
+            f"None of the {len(recipes)} recipe(s) appear in this catalog, which "
+            f"contains {len(result.policies)}.\n"
+            f"Either this is the wrong cloud's export, or every recipe was retired at "
+            f"once. Those\n"
+            f"cannot be told apart from here, so this is reported as 'could not check' "
+            f"rather than\n"
+            f"as {len(recipes)} retirements. Confirm the export is "
+            f"{provider.display_name}'s, then re-run."
+        )
+        return 4
+    if missing:
+        print(
+            f"{missing} recipe(s) are keyed to a policy id the catalog no longer "
+            f"contains. Those recipes match nothing and will never fire again -- a "
+            f"silent gap, not an error anyone would see. Re-triage them."
+        )
+        return 9
+    print(f"All {len(recipes)} recipe(s) are keyed to a policy that still exists.")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
+    """Check every recipe against all four upstreams it depends on.
+
+    All four axes always run, even when an earlier one has already failed. An
     early return would have been simpler, and wrong for the two callers that matter:
     a maintainer fixing drift wants every problem in one pass rather than discovering
-    the next one after each fix, and the drift canary reports on all three signals
+    the next one after each fix, and the drift canary reports on all four signals
     from a single run -- with an early return it could only ever see the first broken
     one, so a provider rename would stay hidden behind an unrelated API change for as
     long as that took to fix.
 
+    Three of the four axes ask a cloud whether the remediation is still correct. The
+    fourth asks Tenable whether the *finding* still exists, which is the half none of
+    the others can see: a recipe keyed to a retired policy id verifies perfectly on all
+    three cloud axes and matches nothing forever.
+
     One process has one exit code, so when several axes fail the most urgent wins:
-    API drift (3) over HCL drift (7) over CLI drift (8), because a wrong API call is
-    what runs against live infrastructure. "Could not check" (4) outranks all of them
+    API drift (3) over HCL drift (7) over CLI drift (8) over a retired policy (9),
+    because a wrong API call is what runs against live infrastructure while a retired
+    policy only means a recipe never fires. "Could not check" (4) outranks all of them
     -- a blind canary is worse than a red one, since it reports nothing at all.
     """
     api_code = _verify_api_axis(provider)
@@ -1019,13 +1170,15 @@ def cmd_verify(args: argparse.Namespace, provider: Provider) -> int:
     hcl_code = _verify_hcl_axis(args, provider)
     print()
     cli_code = _verify_cli_axis(provider)
+    print()
+    policy_code = _verify_policy_axis(args, provider)
 
-    failed = {c for c in (api_code, hcl_code, cli_code) if c != 0}
+    failed = {c for c in (api_code, hcl_code, cli_code, policy_code) if c != 0}
     # Explicit precedence rather than `min`, which would give the same answer today
-    # only because 3 < 7 < 8 -- an accident of numbering that a new code could break
-    # silently. 4 leads: an axis that could not run makes every other verdict
+    # only because 3 < 7 < 8 < 9 -- an accident of numbering that a new code could
+    # break silently. 4 leads: an axis that could not run makes every other verdict
     # incomplete, and is what must be fixed before the rest can be trusted.
-    for code in (4, 3, 7, 8):
+    for code in (4, 3, 7, 8, 9):
         if code in failed:
             return code
     # Any other non-zero code means an axis returned something undocumented, which is
@@ -1209,16 +1362,18 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
         "verify",
         help=f"check recipes against the current {provider.display_name} service models",
         description=(
-            f"Verify that every recipe still matches upstream, on all three axes: the "
+            f"Verify that every recipe still matches upstream, on all four axes: the "
             f"API operation and parameters against the {provider.display_name} service "
             f"models; each HCL target's resource type and arguments against the "
-            f"Terraform/OpenTofu provider schema; and each rendered command's "
-            f"subcommand and flags against the CLI's own flag surface. The three rot "
-            f"independently -- a renamed CLI flag or provider argument breaks a shipped "
-            f"artifact while the API operation is untouched -- so all three always run "
-            f"and all three are reported. Exit code names the most urgent: 4 an axis "
-            f"could not run, 3 API drift, 7 provider-schema drift, 8 CLI-flag drift. "
-            f"Run this before trusting generated output."
+            f"Terraform/OpenTofu provider schema; each rendered command's subcommand "
+            f"and flags against the CLI's own flag surface; and each recipe's policy id "
+            f"against the Tenable policy catalog. The four rot independently -- a "
+            f"renamed CLI flag or provider argument breaks a shipped artifact while the "
+            f"API operation is untouched, and a retired policy id breaks nothing at all "
+            f"while silently matching zero findings -- so all four always run and all "
+            f"four are reported. Exit code names the most urgent: 4 an axis could not "
+            f"run, 3 API drift, 7 provider-schema drift, 8 CLI-flag drift, 9 a recipe "
+            f"keyed to a retired policy. Run this before trusting generated output."
         ),
     )
     ver.add_argument(
@@ -1230,6 +1385,18 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
             f"Defaults to ${SCHEMA_ENV_VAR}. Without it the HCL check is reported as "
             "not run rather than as passing. Generating it needs a workspace that has "
             "downloaded the provider, which is why this tool does not do it for you."
+        ),
+    )
+    ver.add_argument(
+        "--catalog",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "policy catalog JSON, used to check that each recipe's policy id still "
+            "exists upstream. Optional here and required by `policies`, because this "
+            "tool has no live Tenable adapter and so cannot fetch one; without it the "
+            "policy check is reported as not run rather than as passing. "
+            f"{provider.catalog_export_hint}"
         ),
     )
     ver.set_defaults(func=cmd_verify)

@@ -7,6 +7,87 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **A fourth `verify` axis: every recipe's policy id, against the Tenable policy catalog (exit `9`).**
+  The three existing axes all ask a *cloud* whether a remediation is still correct. None of them can
+  see the case where the remediation is perfect and the **finding** no longer exists: retire a policy
+  id upstream and the recipe keyed to it matches zero findings, forever. There is no error, no
+  warning, and no artifact — an empty output set that is indistinguishable from a clean estate. It was
+  the only upstream this tool depended on and did not check.
+
+  Exit `9`, last in precedence (`4` → `3` → `7` → `8` → `9`), because the other codes mean a shipped
+  artifact does the wrong thing against live infrastructure while this one means an artifact is never
+  produced at all. It is also the only code fixed by re-triaging a policy rather than by editing a
+  command, which is why it is distinct rather than folded into `3`. A retitled policy is a **warning,
+  not a failure**: the remediation still applies and only the label in the artifact goes stale, and
+  folding it into `9` would have made that code ambiguous between "cosmetic rename" and "matches
+  nothing".
+
+  Runs only when given `--catalog`, and reports **"did NOT run"** rather than passing without one —
+  the same contract as `--provider-schema`, for a stronger reason: `core/sources.py` deliberately has
+  no live Tenable adapter, so the axis cannot fetch a catalog even in principle. All 14 shipped policy
+  ids were confirmed live upstream when this landed, and both clouds now pass all four axes against
+  real inputs (`awsremgen`: botocore, a generated `hashicorp/aws` schema, `ac.index`, a catalog
+  export; `azremgen`: the bundled `azure.mgmt.*` SDKs, an `azurerm` 5.0.1 schema, `az --help`, a
+  catalog export).
+
+  **Two false-positive shapes were found by running it, not by reading it, and both now report `4`
+  instead of a confident wrong answer.** Pointing `awsremgen verify --catalog` at the *Azure* export —
+  two files in a downloads folder, the wrong one on the command line — originally returned `9` and
+  told the user to re-triage all six recipes: a high-confidence wrong verdict whose stated fix is
+  unrelated to the real one. Every recipe missing from a *non-empty* catalog is now reported as
+  could-not-check, naming both possibilities, because the two are genuinely indistinguishable from
+  that data. A catalog that parses to zero policies is treated the same way. Separately, a record the
+  loader *rejects* is absent from the comparison and therefore reads as retired, so rejections are
+  printed **before** the per-recipe verdicts — a `FAIL` has to be explainable.
+
+  Thirteen new tests across both clouds, mutation-verified rather than trusted for passing: six
+  mutations (retirement silently passing, no-catalog reporting a pass, the wrong-cloud guard removed,
+  `9` promoted above `3`/`7`/`8`, a retitle folded into `9`, rejections printed after the verdicts)
+  each fail a test that names the specific defect. The drift canary gained a `policy-retired` branch
+  for both clouds even though it **cannot reach it** — the axis has no tenant on a public schedule, so
+  it reports "did not run" there — because without the branch the fallthrough would have diagnosed a
+  real retirement as "the canary itself is broken". That gap is now stated in the canary header:
+  upstreams *watched* is three, axes *reported* is four.
+- **Generated HCL now declares a bounded `required_providers` constraint.** Every `.tf` file already
+  noted a per-policy `min_provider_version`; none of them carried an upper bound. A floor alone is the
+  shape that fails on someone else's machine: `init` resolves whatever major is newest on the day the
+  **user** runs it, so a file generated and validated against a verified provider breaks in their
+  terminal against a major nobody tested — and reads as a defect in the file rather than as an
+  untested combination. Both providers ship a major roughly annually and both relocate arguments when
+  they do; `hashicorp/aws` v5 → v6 moved the `aws_s3_bucket` sub-arguments, the resource type two of
+  these recipes write. The bound moves that breakage into this project's CI.
+
+  The ceiling is the *next* major, exclusive, so every minor and patch inside the verified one is
+  allowed and a routine release needs no edit. It comes from a new per-cloud
+  `Provider.tf_provider_verified_major` — **6** for `hashicorp/aws`, **5** for `hashicorp/azurerm`.
+  Per cloud rather than shared because the two genuinely differ: one shared value would either admit
+  an `azurerm` 6 that does not exist and has verified nothing, or refuse the `aws` major the committed
+  samples are validated against. Raising it asserts a re-verification happened, which is what
+  `verify`'s HCL axis and the drift canary measure.
+
+  **The floor and the ceiling are different kinds of claim, and the block now says so when they
+  differ.** The ceiling is what was tested; the floor is the release at which each argument first
+  existed. For AWS those are 6.x and `>= 5.0`, so the emitted range admits versions nobody checked —
+  the block names that and points at pinning `6.x`. Azure's range is wholly inside its verified major,
+  so the note is suppressed there rather than printed unconditionally: telling an Azure reader their
+  constraint admits untested versions would be false, and the fix it offers is what they already have.
+
+  Two descriptor guards, at construction rather than at render time, because the pair can disagree in
+  both directions and only one of them is loud. A verified major with no source address is a template
+  failure on a user's run; a source with **no** verified major renders the unbounded floor this field
+  exists to close, and `init` accepts it silently. Emitting nothing at all is also explicit: with
+  either input absent the block is omitted rather than guessed, since a constraint naming the wrong
+  provider or bounding at an unverified major reads as a checked claim. A recipe whose floor is *above*
+  the ceiling raises instead of emitting an unsatisfiable range — `tofu init` would call that "no
+  available releases match", which is true and says nothing about the ceiling being the stale half.
+
+  Fourteen tests, mutation-verified: ten mutations (ceiling dropped, local name derived from the cloud
+  id instead of the source so `azure` shadows `azurerm`, the unsatisfiable-floor guard removed, the
+  omit-when-unjustifiable guard removed, the block rendered after the scope statement, the floor
+  caveat printed unconditionally, a no-results file bounding a provider it never uses, both descriptor
+  guards, and the two clouds sharing one ceiling) each fail a test naming the specific defect. All five
+  committed sample `.tf` files were regenerated and re-checked with real `tofu fmt`, `init` and
+  `validate`.
 - **An S3 Block Public Access recipe — Batch 4 of the AWS register (5 → 6 recipes).** `aws s3api
   put-public-access-block` with all four blocks set, and `aws_s3_bucket_public_access_block` in HCL.
   Reversible, free and applied in place, so it derives to `safest` and is the second AWS recipe the

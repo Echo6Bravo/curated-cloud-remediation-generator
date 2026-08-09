@@ -1,6 +1,6 @@
 """Curated Azure remediation recipes.
 
-Every recipe here has been verified on three axes, all of which
+Every recipe here has been verified on four axes, all of which
 ``azremgen verify`` re-checks:
 
 1. The ARM operation and its model properties, against the ``azure.mgmt.*`` SDK
@@ -14,6 +14,12 @@ Every recipe here has been verified on three axes, all of which
    provider's own ``commonids`` id types, since the schema does not describe them.
 3. The rendered ``az`` command's subcommand and flags, against ``az <command>
    --help`` (see :mod:`remgen.providers.azure.cli_surface`).
+4. The policy id, against the Tenable policy catalog -- the one axis whose upstream
+   is not Azure, and the one that catches a recipe going *quiet* rather than wrong:
+   a retired policy id matches no finding, so the recipe never fires and produces
+   an empty artifact set that reads as a clean estate. Re-checked only when
+   ``verify`` is given ``--catalog``, since there is no live adapter (see
+   :mod:`remgen.core.sources`); every id here was confirmed live when written.
 
 Coverage is intentionally partial, on the same rule as AWS: a wrong recipe is
 worse than a missing one. Everything unsupported is reported by

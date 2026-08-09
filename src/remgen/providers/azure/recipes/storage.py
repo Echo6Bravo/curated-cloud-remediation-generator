@@ -54,7 +54,7 @@ The five ``_ACCOUNT_STUBS`` risk a replacement *warning* a reviewer can see in a
 plan. This risks a silent network lockout or exposure from a value the tool made up.
 So the HCL axis is declined rather than approximated -- the same rule that keeps the
 Key Vault RBAC recipe out of this package entirely, applied to one axis instead of
-all three. The ``az`` command is verified and safe: ``--bypass`` merges into the
+all of them. The ``az`` command is verified and safe: ``--bypass`` merges into the
 existing rule set rather than replacing it.
 """
 
@@ -491,7 +491,7 @@ _TRUSTED_SERVICES_BYPASS = Recipe(
 #: Every storage recipe. Aggregated by :mod:`remgen.providers.azure.recipes`.
 #:
 #: **``392599b3`` "Storage Account Shared Key access is enabled" is deliberately not
-#: here**, though all three axes pass for it (``--allow-shared-key-access false``,
+#: here**, though all three cloud axes pass for it (``--allow-shared-key-access false``,
 #: SDK ``allow_shared_key_access``, azurerm ``shared_access_key_enabled``). Disabling
 #: Shared Key breaks every caller using an account key or a SAS -- which is most
 #: tooling, including parts of ``az`` itself -- so it belongs to a tier this recipe
@@ -500,7 +500,7 @@ _TRUSTED_SERVICES_BYPASS = Recipe(
 #: single call, and shipping it beside settings that break nothing would
 #: misrepresent it. ``AZURE_POLICY_TRIAGE.md`` records it as a rejection for this
 #: reason, so the register and this note now agree; an earlier version of the
-#: register listed it as actionable because all three axes pass, which is true and
+#: register listed it as actionable because all three cloud axes pass, which is true and
 #: was not sufficient.
 #:
 #: **Three more storage policies are absent because they cannot be recipes at all**,

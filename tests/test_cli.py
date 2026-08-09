@@ -1031,20 +1031,24 @@ def test_verify_reports_model_source(env, capsys):
         assert "could not be checked" in captured
 
 
-def test_verify_reports_all_three_axes(env, capsys):
+def test_verify_reports_all_four_axes(env, capsys):
     """``verify`` must visibly cover every axis, including ones that did not run.
 
-    The three checks -- API model, provider schema, CLI flags -- rot independently, so
-    a run that silently omitted one would leave a reader believing a clean result
-    covered all of them. Each section must name itself in the output even when its
-    inputs are absent; that is the whole reason the HCL section prints a "not checked"
-    block rather than nothing.
+    The four checks -- API model, provider schema, CLI flags, policy catalog -- rot
+    independently, so a run that silently omitted one would leave a reader believing a
+    clean result covered all of them. Each section must name itself in the output even
+    when its inputs are absent; that is the whole reason the HCL and policy sections
+    print a "not checked" block rather than nothing.
+
+    Asserted as a set of section headers rather than a count, and the two axes whose
+    inputs are usually absent are included deliberately: those are the ones a silent
+    ``return 0`` would drop, and dropping one is how a three-axis run comes to read as
+    a four-axis one.
     """
     code = _run(["verify"])
     captured = capsys.readouterr().out
-    assert "Model source:" in captured
-    assert "HCL: checking" in captured
-    assert "CLI: checking" in captured
+    for header in ("Model source:", "HCL: checking", "CLI: checking", "Policies: checking"):
+        assert header in captured, f"the {header!r} axis did not report"
     assert code in (0, 4)
 
 
@@ -1069,7 +1073,7 @@ def test_a_provider_with_no_cli_verifier_says_the_axis_did_not_run(capsys):
     assert _verify_cli_axis(dataclasses.replace(AWS, verify_cli_surface=None)) == 0
     out = capsys.readouterr().out
     assert "did not run" in out, "an axis with no verifier reported nothing at all"
-    assert "one of three" in out, (
+    assert "one of four" in out, (
         "the message must say what a clean run of the others does not cover"
     )
     assert "ok  " not in out, "an axis that did not run must not print a pass line"
@@ -1211,6 +1215,214 @@ def test_verify_reports_the_most_urgent_code_not_the_first(env, capsys, monkeypa
     monkeypatch.setattr(core_cli, "_verify_cli_axis", lambda p: 8)
     assert _run(["verify"]) == 7, "HCL drift must outrank CLI drift"
     capsys.readouterr()  # drain; the assertions above are on codes, not output
+
+
+# ---------------------------------------------------------------------------
+# verify: the policy-catalog axis
+#
+# The fourth axis, and the only one whose upstream is Tenable rather than AWS. It
+# closes a false negative none of the other three can see: a recipe whose API call,
+# provider arguments and CLI flags all verify is still dead if its policy id has been
+# retired, because it then matches zero findings forever and nothing reports it.
+#
+# The catalog fixtures here are built *from the recipe set* rather than typed out,
+# which is the only reason they stay valid as recipes are added -- but a fixture
+# derived from the recipes can only ever pass, so every failure case below mutates
+# that fixture in a specific way rather than trusting it.
+# ---------------------------------------------------------------------------
+
+
+def _catalog(tmp_path, name="catalog.json", *, recipes=None, drop=(), retitle=None, extra=()):
+    """Write a policy-catalog export derived from the real recipe set.
+
+    Derived rather than typed so it cannot go stale as recipes land. ``drop`` retires
+    policy ids, ``retitle`` maps an id to a new upstream title, ``extra`` appends raw
+    records (used to inject one the loader will reject).
+    """
+    records = [
+        {"id": r.policy_id, "title": r.policy_title, "category": "Data"}
+        for r in (all_recipes() if recipes is None else recipes)
+        if r.policy_id not in drop
+    ]
+    for record in records:
+        if retitle and record["id"] in retitle:
+            record["title"] = retitle[record["id"]]
+    return _write(tmp_path / name, records + list(extra))
+
+
+def test_verify_reports_the_policy_axis_and_says_it_did_not_run_without_a_catalog(env, capsys):
+    """No ``--catalog`` must read as unchecked, never as a pass.
+
+    Exit-code-neutral, matching ``--provider-schema``: this tool has no live Tenable
+    adapter (see ``remgen.core.sources``), so requiring an export would make the
+    ordinary path fail. The output is therefore the only thing preventing a reader from
+    taking a clean run as "the policy ids were confirmed", which is what this pins.
+    """
+    code = _run(["verify"])
+    captured = capsys.readouterr().out
+    assert "Policies: checking" in captured, "the fourth axis did not report at all"
+    section = captured.split("Policies: checking", 1)[1]
+    assert "not checked" in section
+    assert "did NOT run" in section
+    assert "no live Tenable adapter" in section, (
+        "the message must say why the tool cannot fetch a catalog itself"
+    )
+    assert "ok  " not in section, "an axis that did not run must not print a pass line"
+    assert code in (0, 4)
+
+
+def test_verify_passes_the_policy_axis_when_every_id_is_live(env, capsys, tmp_path):
+    """The green path, and the anti-vacuity floor under it.
+
+    The count is derived: asserting "All 6" would fail the moment a seventh recipe
+    landed, for a reason unrelated to the axis. Zero recipes would make the pass line
+    trivially true, so that is asserted against separately.
+    """
+    recipes = all_recipes()
+    assert recipes, "no recipes; the policy axis would examine nothing and still pass"
+    code = _run(["verify", "--catalog", str(_catalog(tmp_path))])
+    captured = capsys.readouterr().out
+    assert code == 0, captured
+    assert f"All {len(recipes)} recipe(s) are keyed to a policy that still exists." in captured
+
+
+def test_verify_exits_9_when_a_policy_id_has_been_retired(env, capsys, tmp_path):
+    """Exit 9 must be reachable and distinct from 3, 7 and 8.
+
+    This is the whole point of the axis. The canary branches on the code to name which
+    upstream moved, and the fix differs per code: 3 is an API change, 7 a provider
+    argument, 8 a CLI flag, and 9 is a policy that no longer exists -- which is fixed by
+    re-triaging a recipe, not by editing a command. A retirement reported as 0 would be
+    invisible, and reported as 3 would send someone to the wrong upstream.
+
+    One id is dropped rather than all of them, because an all-missing catalog is the
+    wrong-export signature and is deliberately reported as 4 instead (see below).
+    """
+    retired = all_recipes()[0]
+    catalog = _catalog(tmp_path, drop={retired.policy_id})
+    code = _run(["verify", "--catalog", str(catalog)])
+    captured = capsys.readouterr().out
+    assert code == 9, f"expected the retired-policy code, got {code}:\n{captured}"
+    assert retired.policy_id in captured
+    assert "not in the catalog" in captured
+    assert "match nothing and will never fire again" in captured
+
+
+def test_a_retitled_policy_warns_and_does_not_fail(env, capsys, tmp_path):
+    """A renamed policy still matches findings, so it is a warning, not a failure.
+
+    Kept out of the exit code deliberately: what breaks is the label a reviewer reads
+    in the generated artifact, not the remediation. Folding it into 9 would mean a
+    cosmetic upstream rename blocked generation, and -- worse -- would make 9 ambiguous
+    between "stale title" and "matches nothing", which are not the same problem.
+    """
+    renamed = all_recipes()[0]
+    catalog = _catalog(tmp_path, retitle={renamed.policy_id: "Upstream Renamed This"})
+    code = _run(["verify", "--catalog", str(catalog)])
+    captured = capsys.readouterr().out
+    assert code == 0, captured
+    assert "title upstream is now 'Upstream Renamed This'" in captured
+    assert "the label in generated artifacts is stale" in captured
+    # Still counted as live: a retitled policy exists, and saying otherwise would send
+    # someone to re-triage a recipe that works.
+    assert "are keyed to a policy that still exists" in captured
+
+
+def test_the_wrong_clouds_catalog_is_could_not_check_not_a_mass_retirement(env, capsys, tmp_path):
+    """Every recipe missing from a non-empty catalog means the wrong file, not drift.
+
+    Found by doing it: ``awsremgen verify --catalog`` pointed at the Azure export
+    returned 9 and told the user to re-triage all six recipes. That is a confident wrong
+    answer whose stated fix is unrelated to the real one, which is the failure mode this
+    project treats as worse than a red result. The two causes cannot be told apart from
+    this data, so it reports 4 -- which still outranks every other axis and still is not
+    a pass.
+    """
+    from remgen.providers.azure import all_recipes as azure_recipes
+
+    catalog = _catalog(tmp_path, "azure-catalog.json", recipes=azure_recipes())
+    code = _run(["verify", "--catalog", str(catalog)])
+    captured = capsys.readouterr().out
+    assert code == 4, f"a wrong-cloud export must be 'could not check', got {code}"
+    assert "wrong cloud's export" in captured
+    assert "Confirm the export is AWS's" in captured
+    assert "recipe(s) are keyed to a policy id the catalog no longer contains" not in captured
+
+
+def test_an_empty_catalog_is_could_not_check_not_every_policy_retired(env, capsys, tmp_path):
+    """An export that parses to zero policies would mark every recipe retired.
+
+    Same class as the wrong-cloud case and reported the same way. The count in the
+    message is derived from the recipe set; it was a hardcoded ``14`` at first, which
+    printed "rather than as 14 retired policies" while checking six.
+    """
+    code = _run(["verify", "--catalog", str(_write(tmp_path / "empty.json", []))])
+    captured = capsys.readouterr().out
+    assert code == 4
+    assert f"rather than as {len(all_recipes())} retired policies" in captured
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [("absent.json", None), ("bad.json", "not json{")],
+    ids=["missing-file", "malformed-json"],
+)
+def test_an_unreadable_catalog_fails_rather_than_passing(env, capsys, tmp_path, name, content):
+    """A catalog that was asked for and cannot be read is 4, never 0.
+
+    The blind-canary shape: point a scheduled run at a path that stops existing, and a
+    checker treating "unreadable" as "unavailable" reports green forever.
+    """
+    path = tmp_path / name
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    code = _run(["verify", "--catalog", str(path)])
+    assert code == 4
+    assert "could not read" in capsys.readouterr().out
+
+
+def test_rejected_catalog_records_are_named_before_any_retirement_verdict(env, capsys, tmp_path):
+    """A record the loader rejects is absent from the comparison and reads as retired.
+
+    That makes a rejected record indistinguishable from a retirement unless it is
+    reported, so it is printed *before* the per-recipe verdicts -- a FAIL below has to
+    be explainable. The rejected record here also carries a live recipe's id, so the
+    FAIL it produces is provably caused by the rejection rather than by real drift.
+    """
+    victim = all_recipes()[0]
+    catalog = _catalog(
+        tmp_path,
+        drop={victim.policy_id},
+        extra=[{"id": "", "title": victim.policy_title}],  # rejected: missing policy id
+    )
+    code = _run(["verify", "--catalog", str(catalog)])
+    captured = capsys.readouterr().out
+    assert code == 9, captured
+    section = captured.split("Policies: checking", 1)[1]
+    assert "1 catalog record(s) were rejected" in section
+    assert section.index("rejected") < section.index(victim.policy_id), (
+        "the rejection must be reported before the FAIL it explains"
+    )
+
+
+def test_a_retired_policy_does_not_outrank_a_real_drift_verdict(env, capsys, monkeypatch, tmp_path):
+    """9 is last in precedence, and 4 still leads.
+
+    A retired policy means a recipe stops firing; API, provider-schema and CLI drift
+    mean a shipped artifact does the wrong thing against live infrastructure. When both
+    are true in one run the latter is what someone must act on first.
+    """
+    from remgen.core import cli as core_cli
+
+    catalog = str(_catalog(tmp_path, drop={all_recipes()[0].policy_id}))
+
+    monkeypatch.setattr(core_cli, "_verify_cli_axis", lambda p: 8)
+    assert _run(["verify", "--catalog", catalog]) == 8, "CLI drift must outrank a retired policy"
+
+    monkeypatch.setattr(core_cli, "_verify_cli_axis", lambda p: 0)
+    monkeypatch.setattr(core_cli, "_verify_hcl_axis", lambda a, p: 4)
+    assert _run(["verify", "--catalog", catalog]) == 4, "could-not-check must still lead"
+    capsys.readouterr()  # drain; these assertions are on codes, not output
 
 
 def test_recipes_lists_levels_and_safety_notes(env, capsys):

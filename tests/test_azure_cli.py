@@ -214,10 +214,10 @@ def test_verify_reports_nothing_to_check_rather_than_a_pass(env, capsys):
     assert "All 0 recipe(s)" not in out, f"still claims a vacuous pass:\n{out}"
 
 
-def test_verify_says_so_on_every_one_of_the_three_axes(env, capsys):
-    """All three axes must account for themselves, including the one with no verifier.
+def test_verify_says_so_on_every_one_of_the_four_axes(env, capsys):
+    """All four axes must account for themselves, including the one with no verifier.
 
-    ``verify`` documents three axes and a canary branches on which failed. The
+    ``verify`` documents four axes and a canary branches on which failed. The
     CLI-surface axis returned 0 while printing nothing, so the output showed two
     sections -- a reader counting them would conclude the third had passed, or would
     not know it existed. Asserted by looking for each axis's own label, because
@@ -232,8 +232,8 @@ def test_verify_says_so_on_every_one_of_the_three_axes(env, capsys):
     assertion here does not drop it.
 
     Also run against an emptied descriptor now -- see :func:`_no_coverage`. The
-    three-sections requirement is asserted against the *real* recipe set too, in
-    ``test_verify_reports_all_three_axes_against_the_real_recipe_set`` below; this one
+    four-sections requirement is asserted against the *real* recipe set too, in
+    ``test_verify_reports_all_four_axes_against_the_real_recipe_set`` below; this one
     keeps the zero-coverage half, where a silent axis is easiest to miss.
     """
     assert _no_coverage(argv=["verify"]) == 0
@@ -241,6 +241,7 @@ def test_verify_says_so_on_every_one_of_the_three_axes(env, capsys):
     assert "service models" in out, "the API axis did not report"
     assert "HCL: " in out, "the HCL axis did not report"
     assert "CLI: " in out, "the CLI-surface axis did not report"
+    assert "Policies: " in out, "the policy-catalog axis did not report"
     # The implemented axis must name the CLI it asked, or a drift report cannot be
     # reproduced -- and, having examined nothing, must still not read as a pass.
     cli_section = out.split("CLI: ", 1)[1]
@@ -250,15 +251,20 @@ def test_verify_says_so_on_every_one_of_the_three_axes(env, capsys):
     assert "did not run" not in cli_section, (
         "the axis has a verifier now; 'did not run' would misreport a check that ran"
     )
+    # The policy axis has no catalog here, so it must say it did not run -- and must not
+    # borrow the API axis's "nothing to check", which would name the wrong reason.
+    policy_section = out.split("Policies: ", 1)[1]
+    assert "did NOT run" in policy_section
+    assert "no --catalog given" in policy_section
 
 
-def test_verify_reports_all_three_axes_against_the_real_recipe_set(env, capsys):
-    """The other half of the test above: three axes must report for real recipes too.
+def test_verify_reports_all_four_axes_against_the_real_recipe_set(env, capsys):
+    """The other half of the test above: four axes must report for real recipes too.
 
     Not a duplicate. The test above proves an empty set cannot read as a pass; this one
     proves a non-empty set is actually examined, which is the failure the "nothing to
     check" path could otherwise mask -- a bug that skipped every recipe would print
-    three well-formed sections and the zero-coverage assertions would not notice.
+    four well-formed sections and the zero-coverage assertions would not notice.
 
     Deliberately asserts the count and not the verdicts. Whether the recipes still
     match Azure is a question for the live axes (``tests/test_azure_drift.py``,
@@ -277,6 +283,7 @@ def test_verify_reports_all_three_axes_against_the_real_recipe_set(env, capsys):
     assert f"Verifying {count} recipe(s)" in out
     assert f"HCL: checking {with_hcl} recipe(s)" in out
     assert f"CLI: checking {count} recipe(s)" in out
+    assert f"Policies: checking {count} recipe(s)" in out
     assert "nothing to check" not in out, (
         "a real recipe set reported as examining nothing; the axis is skipping recipes"
     )
@@ -479,16 +486,17 @@ def test_the_generated_hcl_validates_against_the_real_azurerm_provider(
 def test_verify_passes_all_axes_against_the_real_azure_toolchain(
     env, capsys, real_azurerm_schema_path
 ):
-    """All three Azure axes, green, against real inputs, through the real command.
+    """All four Azure axes, green, against real inputs, through the real command.
 
     The Azure counterpart of ``test_cli.py``'s toolchain test, and the point is the
     same: each axis has its own unit tests, but CI and the drift canary branch on the
     *combined* exit code. An axis returning a code the combiner mishandles would leave
     every per-axis test green.
 
-    Azure adds a reason of its own. Its three axes read three unrelated sources -- the
-    SDKs bundled in ``az``, an ``azurerm`` schema document, and ``az --help`` -- so this
-    is the only test that confirms one machine can satisfy all three at once.
+    Azure adds a reason of its own. Its four axes read four unrelated sources -- the
+    SDKs bundled in ``az``, an ``azurerm`` schema document, ``az --help``, and a Tenable
+    policy export -- so this is the only test that confirms one machine can satisfy all
+    four at once.
     """
     if real_azurerm_schema_path is None:
         pytest.fail("tofu is present but no azurerm schema was produced; the HCL axis never ran")
@@ -500,13 +508,70 @@ def test_verify_passes_all_axes_against_the_real_azure_toolchain(
     # real number the next time a CLI-only recipe lands.
     with_hcl = sum(1 for r in AZURE.all_recipes() if r.hcl is not None)
     assert with_hcl, "no recipe has an HCL target; the HCL axis would examine nothing"
-    code = main(["verify", "--provider-schema", str(real_azurerm_schema_path)])
+    # A catalog is passed so the fourth axis actually runs. Derived from the recipe set
+    # rather than typed: this file has no tenant to export from, and the axis's job here
+    # is to prove the combiner handles four codes, not to re-confirm the ids upstream.
+    catalog = env / "azure-catalog.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {"id": r.policy_id, "title": r.policy_title, "category": "Data"}
+                for r in AZURE.all_recipes()
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "verify",
+            "--provider-schema",
+            str(real_azurerm_schema_path),
+            "--catalog",
+            str(catalog),
+        ]
+    )
     captured = capsys.readouterr().out
     assert code == 0, captured
     assert f"Verifying {count} recipe(s) against Azure service models." in captured
     assert f"All {with_hcl} HCL target(s) match the current provider schema." in captured
     assert f"All {count} recipe(s) render commands the CLI accepts." in captured
+    assert f"All {count} recipe(s) are keyed to a policy that still exists." in captured
     assert "nothing to check" not in captured, "an axis examined nothing and this still passed"
+
+
+def test_the_aws_catalog_is_could_not_check_for_azure_too(env, capsys):
+    """The wrong-cloud guard must be symmetric, not written around AWS.
+
+    The guard lives in shared ``core`` code and is provoked from the AWS side in
+    ``tests/test_cli.py``; this is the other direction. Worth both, because the message
+    names the cloud from the descriptor -- ``provider.display_name`` -- and a hardcoded
+    "AWS" there would tell an Azure user to confirm they had AWS's export, which is
+    exactly the wrong instruction and would read as a tool defect.
+
+    The catalog is real AWS ids, so this is the mistake a user actually makes: two
+    exports in a downloads folder, and the wrong one on the command line.
+    """
+    from remgen.providers.aws import all_recipes as aws_recipes
+
+    catalog = env / "aws-catalog.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {"id": r.policy_id, "title": r.policy_title, "category": "Data"}
+                for r in aws_recipes()
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code = main(["verify", "--catalog", str(catalog)])
+    captured = capsys.readouterr().out
+    assert code == 4, f"a wrong-cloud export must be 'could not check', got {code}"
+    assert "Confirm the export is Azure's" in captured, (
+        "the message named the wrong cloud; it must come from the descriptor"
+    )
+    assert "AWS" not in captured.split("Policies: checking", 1)[1], (
+        "the Azure policy axis must not mention AWS"
+    )
 
 
 # ---------------------------------------------------------------------------

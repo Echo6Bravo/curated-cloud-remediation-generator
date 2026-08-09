@@ -12,7 +12,7 @@ was authored, because an abstraction validated against one instance is a guess. 
 found three defects, all of them in ``core`` -- see ``tests/test_azure_cli.py``.
 
 It now ships recipes, so ``generate`` emits real artifacts and ``verify`` checks all
-three axes. Coverage is still partial by design: a policy with no recipe is reported
+four axes. Coverage is still partial by design: a policy with no recipe is reported
 by ``azremgen policies --unsupported`` and counted in the run summary, so a gap is
 visible rather than silent.
 """

@@ -99,6 +99,115 @@ _NO_RESULTS = """
 # No remediable findings were supplied, so no configuration was generated.
 """
 
+#: Commented, for exactly the reason the ``provider`` block is: a module may hold only
+#: one ``required_providers`` configuration, and this file is documented as something
+#: you drop into a workspace that already has one. Active, it would raise "Duplicate
+#: required providers configuration" and fail at ``init`` -- measured, not assumed.
+#:
+#: The ceiling is the point. Without it the floor alone resolves to whatever major is
+#: newest when the user runs ``init``, which is how a file generated against a verified
+#: provider breaks on someone else's machine against one nobody tested.
+#:
+#: ``{floor_caveat}`` is filled by :data:`_FLOOR_CAVEAT` only when the floor's major is
+#: *below* the verified one, which is a real distinction rather than a wording nicety:
+#: for ``aws`` the emitted ``>= 5.0, < 7.0`` spans a major nobody tested, while for
+#: ``azurerm`` the whole range is inside the verified 5.x. Printing the caveat
+#: unconditionally would tell an Azure reader their constraint admits untested versions
+#: when it does not, and the correction it suggests -- pin to 5.x -- is what they
+#: already have.
+_VERSION_CONSTRAINT = """
+# ---------------------------------------------------------------------------
+# PROVIDER VERSION
+#
+# Verified against {source} {verified_major}.x. The upper bound is deliberate: a
+# provider major relocates arguments between resources -- aws v5 to v6 moved the
+# `aws_s3_bucket` sub-arguments -- so an unbounded constraint would resolve to a
+# major these blocks were never checked against, and fail in your workspace rather
+# than in this project's CI.
+#{floor_caveat}
+# Commented for the same reason as the provider block below: a module may have only
+# one `required_providers` configuration, and dropping a second one into an existing
+# workspace is an error at `init`. Uncomment for standalone use.
+#
+# terraform {{
+#   required_providers {{
+#     {name} = {{
+#       source  = "{source}"
+#       version = ">= {min_version}, < {next_major}.0"
+#     }}
+#   }}
+# }}
+# ---------------------------------------------------------------------------
+"""
+
+#: Appended to the block above only when the floor is older than the verified major.
+#: Leading newline included so the surrounding template needs no conditional spacing.
+_FLOOR_CAVEAT = """
+# The range below is not a verified range, and its two halves are different claims.
+# The ceiling is what was tested. The floor is the earliest release in which these
+# arguments existed at all, which is older -- so a version between the two satisfies
+# the constraint without having been checked. Pin to {verified_major}.x for the
+# verified one only.
+#"""
+
+
+def version_constraint_block(
+    *,
+    provider_source: str,
+    verified_major: int,
+    min_version: str,
+) -> str:
+    """Render the commented provider version constraint, or ``""`` if unavailable.
+
+    Returns empty when either input is missing rather than guessing a bound: a
+    constraint naming the wrong provider, or one whose ceiling was never verified, is
+    worse than none, because both read as a checked claim.
+
+    Args:
+        provider_source: Registry address without a host, e.g. ``"hashicorp/aws"``.
+        verified_major: Highest provider major the recipes were verified against.
+            The emitted ceiling is the *next* major, exclusive, so every minor and
+            patch inside the verified one is allowed.
+        min_version: The highest ``min_provider_version`` among this file's recipes,
+            already aggregated by :func:`group_targets`. Only its *major* is compared:
+            whether the emitted range reaches below the verified major decides whether
+            the block warns that part of its own range is untested.
+    """
+    if not provider_source or verified_major <= 0:
+        return ""
+    # The local name in `required_providers` is the last path segment: "hashicorp/aws"
+    # is declared as `aws`. Taking it from the source rather than from the cloud id
+    # keeps the two consistent for a cloud whose provider is not named after it --
+    # `azure` generates `azurerm`, which is exactly that case.
+    name = provider_source.rsplit("/", 1)[-1]
+    # A floor above the verified ceiling is unsatisfiable, and `tofu init` would
+    # report it as "no available releases match" -- true, and unhelpful about why. It
+    # means a recipe requires a major nobody verified, so the ceiling is what is
+    # stale; say so here rather than emitting a constraint that cannot resolve.
+    if _version_key(min_version)[0] > verified_major:
+        raise ValueError(
+            f"min_provider_version {min_version!r} is above the verified major "
+            f"{verified_major} for {provider_source}: the emitted constraint would be "
+            f"unsatisfiable. Re-verify against the newer major and raise "
+            f"tf_provider_verified_major."
+        )
+    # Only when the range actually reaches below the verified major. Equal majors mean
+    # every version the constraint admits is inside the one that was tested, and
+    # warning there would describe a gap that is not present.
+    floor_caveat = (
+        _FLOOR_CAVEAT.format(verified_major=verified_major)
+        if _version_key(min_version)[0] < verified_major
+        else ""
+    )
+    return _VERSION_CONSTRAINT.format(
+        source=provider_source,
+        name=name,
+        verified_major=verified_major,
+        min_version=min_version,
+        next_major=verified_major + 1,
+        floor_caveat=floor_caveat,
+    )
+
 
 class HclGenerationError(ValueError):
     """Base for conditions that make a ``.tf`` file impossible to emit correctly."""
@@ -684,6 +793,8 @@ def render_hcl(
     unit: OutputUnit | None = None,
     command: str = "remgen",
     scope_block: Callable[[OutputUnit], str] | None = None,
+    provider_source: str = "",
+    verified_major: int = 0,
 ) -> str:
     """Render a complete ``.tf`` file for the given findings.
 
@@ -708,6 +819,11 @@ def render_hcl(
             drops it is the case that gets applied against the wrong scope, so
             providers must pass one; the default exists only for unit tests that
             render a single block.
+        provider_source: The cloud's registry address, e.g. ``"hashicorp/aws"``. With
+            ``verified_major``, emits a commented version constraint above the scope
+            statement. Both default to "absent" so a caller that has neither renders
+            as before rather than emitting a bound it cannot justify.
+        verified_major: Highest provider major the recipes were verified against.
 
     Raises:
         HclGenerationError: If the pairs cannot be rendered as one correct file --
@@ -724,9 +840,6 @@ def render_hcl(
         )
     ]
 
-    if unit is not None and scope_block is not None:
-        parts.append(scope_block(unit))
-
     # One target per live resource, with labels assigned across the whole file:
     # both merging and label uniqueness are properties of the set, so neither can
     # be decided one block at a time.
@@ -734,7 +847,30 @@ def render_hcl(
     # The scope noun comes from the unit so the clash message names what the operator
     # actually has ("subscription", not "account"). Falls back to the neutral default
     # when rendering without a unit, which only unit tests do.
+    #
+    # Grouped before the scope statement is appended, though it is rendered after,
+    # because the version constraint needs the file-wide minimum and that is only
+    # known once every target has been merged.
     targets = group_targets(pairs, **({"scope_noun": unit.scope_noun} if unit is not None else {}))
+
+    if targets:
+        # The highest floor among this file's targets, for the same reason
+        # `group_targets` takes the highest among a merged block's contributors: one
+        # file gets one constraint, and it has to satisfy every block in it.
+        file_minimum = max(
+            (t.min_provider_version for t in targets), key=_version_key, default="5.0"
+        )
+        parts.append(
+            version_constraint_block(
+                provider_source=provider_source,
+                verified_major=verified_major,
+                min_version=file_minimum,
+            )
+        )
+
+    if unit is not None and scope_block is not None:
+        parts.append(scope_block(unit))
+
     if not targets:
         parts.append(_NO_RESULTS)
         return "".join(parts)
@@ -808,4 +944,5 @@ __all__ = [
     "render_hcl",
     "render_one",
     "render_target",
+    "version_constraint_block",
 ]

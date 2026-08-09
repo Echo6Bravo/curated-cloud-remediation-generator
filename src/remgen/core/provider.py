@@ -123,6 +123,26 @@ class Provider:
             Terraform for the same provider, so the match is on this suffix. Empty
             means the cloud has no HCL generation, and the schema check is skipped
             rather than reported as failing.
+        tf_provider_verified_major: The highest provider *major* this cloud's recipes
+            have actually been verified against, which becomes the upper bound of the
+            version constraint in generated HCL. ``0`` emits no constraint.
+
+            Per cloud rather than per recipe, because it records what was verified and
+            the two clouds are verified against different majors: at the time of
+            writing ``hashicorp/aws`` is 6.x while ``hashicorp/azurerm`` is 5.x, so one
+            shared default would overstate the ceiling for whichever cloud trails.
+
+            A floor with no ceiling is the shape that fails silently. Both providers
+            ship a major roughly annually and both relocate arguments when they do --
+            ``aws`` v5 to v6 moved ``aws_s3_bucket`` sub-arguments, the resource type
+            two of these recipes write. Unbounded, a generated file resolves to
+            whatever is newest on the day the *user* runs ``init``, so a break lands in
+            their terminal against a major nobody verified, and reads as a defect in
+            the file rather than as an untested combination.
+
+            A major only, so a routine minor release inside a verified major needs no
+            edit. Raising it is a deliberate claim that the recipes were re-verified,
+            which is what ``verify``'s HCL axis and the drift canary measure.
     """
 
     cloud: str
@@ -142,6 +162,7 @@ class Provider:
     models_unavailable_hint: str = ""
     cli_requirement: str = ""
     tf_provider_source: str = ""
+    tf_provider_verified_major: int = 0
     verify_cli_surface: (
         Callable[[tuple[Recipe, ...]], tuple[tuple[bool, bool, str, str], ...]] | None
     ) = None
@@ -158,6 +179,24 @@ class Provider:
             )
         if not self.command:
             raise ValueError("Provider requires a command name")
+        # A verified major without a source address cannot be rendered -- the
+        # constraint names the provider -- and a cloud with HCL generation but no
+        # verified major emits an unbounded floor, which is the failure mode this
+        # field exists to close. Both are caught here rather than at render time,
+        # where the first is a KeyError on someone's run and the second is silent.
+        if self.tf_provider_verified_major and not self.tf_provider_source:
+            raise ValueError(
+                f"{self.cloud}: tf_provider_verified_major="
+                f"{self.tf_provider_verified_major} needs tf_provider_source to name "
+                f"the provider it bounds"
+            )
+        if self.tf_provider_source and not self.tf_provider_verified_major:
+            raise ValueError(
+                f"{self.cloud}: tf_provider_source={self.tf_provider_source!r} generates "
+                f"HCL, so it must declare tf_provider_verified_major; without it the "
+                f"generated constraint has no upper bound and resolves to a major "
+                f"nobody verified"
+            )
 
 
 __all__ = ["Provider"]

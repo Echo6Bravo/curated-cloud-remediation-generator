@@ -31,8 +31,16 @@ name: Upstream drift canary
 # `UpdateTable` untouched while the Terraform provider renames an argument, or while the
 # CLI renames a flag. Each of those breaks a shipped artifact while signal 1 stays green.
 #
+# `verify` has a FOURTH axis that this canary does not watch, and the gap is deliberate
+# rather than pending: the policy-catalog axis needs a Tenable export, there is no live
+# adapter to fetch one (see `remgen.core.sources`), and a public scheduled workflow has no
+# tenant. So it reports "did not run" in every run here, which is why the count of
+# upstreams *watched* is three while the count of axes *reported* is four. It is
+# unwatched, not silently passing -- and a retired policy is therefore something only a
+# local `verify --catalog` will catch today.
+#
 # All three run in ONE job against one `awsremgen verify` invocation, which reports all
-# three axes in a single run whatever any one of them says. That is deliberate -- see
+# four axes in a single run whatever any one of them says. That is deliberate -- see
 # `cmd_verify`. Splitting them into three jobs would triple the provider download for no
 # added signal, and separate jobs would each need their own issue-filing logic.
 #
@@ -68,7 +76,7 @@ permissions:
 
 jobs:
   upstream-drift:
-    name: All three upstreams still match the recipes
+    name: All upstreams still match the recipes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -170,18 +178,26 @@ jobs:
           print("ac.index", path)
           PY
 
-      - name: Verify recipes against all three upstreams
+      - name: Verify recipes against every upstream
         id: verify
-        # One invocation covers all three axes and reports every one of them regardless
+        # One invocation covers all four axes and reports every one of them regardless
         # of what the others said, so a single run cannot hide a second broken upstream
         # behind the first.
         #
         # Exit codes are load-bearing and are handled individually rather than collapsed
         # into pass/fail, because they call for different responses: 3/7/8 name *which*
-        # upstream moved (a code fix, in three different places), while 4 means a check
-        # could not run at all -- this canary went blind, which is worse than red because
-        # it reports nothing. Treating any of them as success is the specific failure
-        # this workflow exists to prevent.
+        # upstream moved (a code fix, in three different places), 9 means a policy was
+        # retired (a re-triage, not a code fix), while 4 means a check could not run at
+        # all -- this canary went blind, which is worse than red because it reports
+        # nothing. Treating any of them as success is the specific failure this workflow
+        # exists to prevent.
+        #
+        # The policy axis is the one this canary cannot feed: it needs a Tenable catalog
+        # export and there is no live adapter, so it reports "did not run" here and 9 is
+        # unreachable from a scheduled run. The branch below exists anyway, because the
+        # fallthrough case would otherwise diagnose a real retirement as "the canary
+        # itself is broken" the first time someone runs `verify --catalog` locally or
+        # wires an export into this job.
         run: |
           set +e
           awsremgen verify --provider-schema /tmp/schema.json 2>&1 | tee /tmp/verify.txt
@@ -196,6 +212,7 @@ jobs:
             4) echo "verdict=blind" >> "$GITHUB_OUTPUT" ;;
             7) echo "verdict=hcl-drift" >> "$GITHUB_OUTPUT" ;;
             8) echo "verdict=cli-drift" >> "$GITHUB_OUTPUT" ;;
+            9) echo "verdict=policy-retired" >> "$GITHUB_OUTPUT" ;;
             *) echo "verdict=broken" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -246,21 +263,32 @@ jobs:
               lead="$lead not AWS the operation -- which is why this signal exists"
               lead="$lead separately from the service-model check."
               ;;
+            policy-retired)
+              title="Drift: a curated recipe is keyed to a retired Tenable policy"
+              lead="\`awsremgen verify\` exited 9: at least one recipe's policy id is no"
+              lead="$lead longer in the policy catalog. The remediation itself may be"
+              lead="$lead perfectly correct -- the other three axes check that, and can all"
+              lead="$lead pass -- but no finding will ever carry that id again, so the recipe"
+              lead="$lead matches nothing and silently never fires. That produces no error"
+              lead="$lead and an empty artifact set, which reads as a clean estate."
+              lead="$lead The fix is to re-triage the policy, not to edit a command."
+              ;;
             blind)
               title="Drift canary is blind: an upstream check could not run"
-              lead="\`awsremgen verify\` exited 4, meaning at least one of the three checks"
+              lead="\`awsremgen verify\` exited 4, meaning at least one of its checks"
               lead="$lead could not run at all. **This is not a pass**, and every other"
               lead="$lead verdict in the run is incomplete. Read the output below to see"
               lead="$lead which axis is unavailable: no botocore \`data/\` directory, an"
-              lead="$lead unusable or missing provider schema, or no AWS CLI \`ac.index\`."
-              lead="$lead Until it is fixed, that upstream is unwatched."
+              lead="$lead unusable or missing provider schema, no AWS CLI \`ac.index\`, or an"
+              lead="$lead unreadable policy catalog. Until it is fixed, that upstream is"
+              lead="$lead unwatched."
               ;;
             *)
               title="Drift canary failed to run"
               lead="\`awsremgen verify\` exited $CODE, which is not one of its documented"
               lead="$lead codes: 0 success, 3 API drift, 4 could-not-check, 7 provider-schema"
-              lead="$lead drift, 8 CLI-flag drift. The canary itself is broken and is"
-              lead="$lead reporting nothing about any upstream."
+              lead="$lead drift, 8 CLI-flag drift, 9 retired policy. The canary itself is"
+              lead="$lead broken and is reporting nothing about any upstream."
               ;;
           esac
 
@@ -273,7 +301,7 @@ jobs:
             echo "Detected by the scheduled canary, not by a push, so this may have been"
             echo "true for up to a week. Run: $RUN_URL"
             echo
-            echo "All three signals ran and are reported below, so check whether more"
+            echo "Every signal ran and all are reported below, so check whether more"
             echo "than one upstream moved -- the exit code names only the most urgent."
             echo
             # Quoted heredoc: the backticks are Markdown for the issue body, and an
@@ -325,8 +353,8 @@ jobs:
     # TWO upstreams, not three, and the difference from `upstream-drift` is a fact about
     # how Azure ships rather than a signal nobody got round to adding. **Do not add a
     # third.** The AWS job watches botocore, the provider schema, and the `aws` CLI --
-    # three artifacts, three release trains, three maintainers. Azure's three *axes* map
-    # onto only two upstreams:
+    # three artifacts, three release trains, three maintainers. Azure's three *cloud* axes
+    # map onto only two upstreams:
     #
     #   1. `azure-cli`      -- BOTH the API axis and the CLI axis. The API axis reads the
     #                          62 `azure.mgmt.*` SDK packages bundled inside `az`, and
@@ -337,9 +365,11 @@ jobs:
     #                          both signals together.
     #   2. hashicorp/azurerm -- the `.tf` half, released independently by HashiCorp.
     #
-    # This is not a coverage gap: all three axes still run and still report separately,
-    # and `azremgen verify` still distinguishes exit 3 from 8 so the issue names which
-    # half broke. What is genuinely weaker than AWS is *independence* -- the two Azure
+    # This is not a coverage gap: all three cloud axes still run and still report
+    # separately, and `azremgen verify` still distinguishes exit 3 from 8 so the issue
+    # names which half broke. The fourth axis -- the Tenable policy catalog -- is
+    # unwatched here for the same reason as on the AWS job, and reports that it did not
+    # run rather than passing. What is genuinely weaker than AWS is *independence* -- the two Azure
     # axes cannot disagree about which `az` they read, so this canary cannot catch the
     # AWS-style case where a CLI renames a flag the API kept. On Azure that case does not
     # arise from a version skew, because there is no skew to have.
@@ -348,9 +378,11 @@ jobs:
     # runner's `aws` CLI v2 is installed separately from botocore and can move on its own.
     # Azure has one install.
     #
-    # NOTHING HERE AUTHENTICATES, and that is measured rather than hoped for: all three
-    # Azure axes were run against an empty `AZURE_CONFIG_DIR` and reported 4 ok each with
-    # no login prompt. The API axis reads files on disk; the CLI axis calls `--help` and
+    # NOTHING HERE AUTHENTICATES, and that is measured rather than hoped for: the three
+    # Azure cloud axes were run against an empty `AZURE_CONFIG_DIR` and reported 4 ok each
+    # with no login prompt. The policy axis is not covered by that measurement and does
+    # not need to be: with no `--catalog` it makes no call of any kind, and given one it
+    # reads a local file. The API axis reads files on disk; the CLI axis calls `--help` and
     # read-only verbs only. So this job needs no tenant, no secret and no OIDC federation
     # -- which is why it can run on a schedule in a public repo at all. If a future step
     # here needs credentials, that is a design change to argue for, not a detail to add.
@@ -513,14 +545,19 @@ jobs:
           sys.exit(1 if failed else 0)
           PY
 
-      - name: Verify recipes against both Azure upstreams
+      - name: Verify recipes against every Azure upstream
         id: verify
-        # One invocation covers all three axes and reports every one regardless of what
+        # One invocation covers all four axes and reports every one regardless of what
         # the others said, so a run cannot hide a second broken axis behind the first.
         # Exit codes are handled individually rather than collapsed into pass/fail: 3/7/8
-        # name which half moved, while 4 means the canary went blind -- worse than red,
-        # because it reports nothing. Treating any of them as success is the specific
-        # failure this workflow exists to prevent.
+        # name which half moved, 9 means a policy was retired, while 4 means the canary
+        # went blind -- worse than red, because it reports nothing. Treating any of them
+        # as success is the specific failure this workflow exists to prevent.
+        #
+        # As on the AWS job, the policy axis reports "did not run" here: it needs a
+        # Tenable catalog export and there is no live adapter. The 9 branch below is
+        # unreachable from a scheduled run and is kept so the fallthrough cannot
+        # misdiagnose a real retirement as a broken canary.
         run: |
           set +e
           azremgen verify --provider-schema /tmp/az-schema.json 2>&1 | tee /tmp/az-verify.txt
@@ -535,6 +572,7 @@ jobs:
             4) echo "verdict=blind" >> "$GITHUB_OUTPUT" ;;
             7) echo "verdict=hcl-drift" >> "$GITHUB_OUTPUT" ;;
             8) echo "verdict=cli-drift" >> "$GITHUB_OUTPUT" ;;
+            9) echo "verdict=policy-retired" >> "$GITHUB_OUTPUT" ;;
             *) echo "verdict=broken" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -588,14 +626,25 @@ jobs:
               lead="$lead -- so if the API axis passed, the flag was renamed while the"
               lead="$lead underlying SDK operation kept its parameter."
               ;;
+            policy-retired)
+              title="Drift: an Azure recipe is keyed to a retired Tenable policy"
+              lead="\`azremgen verify\` exited 9: at least one recipe's policy id is no"
+              lead="$lead longer in the policy catalog. The remediation may be perfectly"
+              lead="$lead correct -- the other three axes check that, and can all pass -- but"
+              lead="$lead no finding will ever carry that id again, so the recipe matches"
+              lead="$lead nothing and silently never fires. That produces no error and an"
+              lead="$lead empty artifact set, which reads as a clean estate. The fix is to"
+              lead="$lead re-triage the policy, not to edit a command."
+              ;;
             blind)
               title="Azure drift canary is blind: an upstream check could not run"
-              lead="\`azremgen verify\` exited 4, meaning at least one of the three checks"
+              lead="\`azremgen verify\` exited 4, meaning at least one of its checks"
               lead="$lead could not run at all. **This is not a pass**, and every other"
               lead="$lead verdict in the run is incomplete. Read the output below: either no"
               lead="$lead bundled \`azure.mgmt.*\` SDK directory was found, no \`az\` binary"
-              lead="$lead was found, or the \`azurerm\` schema was missing or unusable."
-              lead="$lead Because two of the three axes read one \`azure-cli\` install, a"
+              lead="$lead was found, the \`azurerm\` schema was missing or unusable, or a"
+              lead="$lead supplied policy catalog was unreadable."
+              lead="$lead Because two of the four axes read one \`azure-cli\` install, a"
               lead="$lead single broken install blinds both -- so treat this as two"
               lead="$lead unwatched signals, not one."
               ;;
@@ -603,8 +652,8 @@ jobs:
               title="Azure drift canary failed to run"
               lead="\`azremgen verify\` exited $CODE, which is not one of its documented"
               lead="$lead codes: 0 success, 3 API drift, 4 could-not-check, 7 provider-schema"
-              lead="$lead drift, 8 CLI-flag drift. The canary itself is broken and is"
-              lead="$lead reporting nothing about either upstream."
+              lead="$lead drift, 8 CLI-flag drift, 9 retired policy. The canary itself is"
+              lead="$lead broken and is reporting nothing about either upstream."
               ;;
           esac
 
@@ -617,7 +666,7 @@ jobs:
             echo "Detected by the scheduled canary, not by a push, so this may have been"
             echo "true for up to a week. Run: $RUN_URL"
             echo
-            echo "All three Azure axes ran and are reported below. Two of them read the"
+            echo "Every Azure axis ran and all are reported below. Two of them read the"
             echo "same \`azure-cli\` install, so one upgrade can move both -- check whether"
             echo "more than one moved; the exit code names only the most urgent."
             echo

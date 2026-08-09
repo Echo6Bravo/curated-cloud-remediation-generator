@@ -16,6 +16,7 @@ from remgen.core.generators.hcl import (
     HclMergeConflict,
     group_targets,
     render_hcl,
+    version_constraint_block,
 )
 from remgen.core.generators.hcl import render_one as render_hcl_one
 from remgen.core.layout import Format, plan_units
@@ -851,6 +852,207 @@ def test_curated_recipes_are_not_disruptive_in_v1(recipe):
     assert recipe.safety_tier is not SafetyTier.DISRUPTIVE
     assert recipe.effort is Effort.LOW
     assert not recipe.data_path_impact
+
+
+# ---------------------------------------------------------------------------
+# The provider version constraint
+#
+# The property under test throughout: **a floor with no ceiling is worse than no
+# constraint at all.** Unbounded, a generated file resolves to whatever major is
+# newest on the day the *user* runs `init`, so a break lands in their terminal
+# against a major nobody verified and reads as a defect in the file. So the tests
+# below are mostly about the upper bound existing, being exclusive, and never being
+# asserted from a value nobody measured.
+# ---------------------------------------------------------------------------
+
+
+def test_the_constraint_bounds_the_next_major_exclusively():
+    # The ceiling is `< 7.0`, not `<= 6`: every minor and patch inside the verified
+    # major must be allowed, or a routine 6.58 release stops resolving.
+    out = version_constraint_block(
+        provider_source="hashicorp/aws", verified_major=6, min_version="5.0"
+    )
+    assert 'version = ">= 5.0, < 7.0"' in out
+    assert 'source  = "hashicorp/aws"' in out
+    assert "required_providers" in out
+
+
+def test_the_constraint_is_commented_out_so_it_cannot_duplicate_a_workspaces_own():
+    # A module may hold exactly one `required_providers` configuration, and the header
+    # tells the reader to drop this file into a workspace that already has one. Active,
+    # this block is a "Duplicate required providers configuration" error at `init` --
+    # the same reason the provider block is commented, which is why it is asserted the
+    # same way rather than trusted to the comment explaining it.
+    out = version_constraint_block(
+        provider_source="hashicorp/aws", verified_major=6, min_version="5.0"
+    )
+    for line in out.splitlines():
+        assert not line.strip() or line.startswith("#"), f"uncommented line: {line!r}"
+
+
+def test_the_local_provider_name_comes_from_the_source_not_the_cloud():
+    """``azure`` declares ``azurerm``, which is the case a cloud-derived name gets wrong.
+
+    ``required_providers`` keys on the local name, and every reference in the file
+    resolves through it. Deriving it from the cloud id would emit ``azure = { source =
+    "hashicorp/azurerm" }``, which ``init`` accepts -- it is a legal rename -- and which
+    then fails to match the ``provider "azurerm"`` block in the same file.
+    """
+    out = version_constraint_block(
+        provider_source="hashicorp/azurerm", verified_major=5, min_version="5.0"
+    )
+    assert "azurerm = {" in out
+    assert "azure = {" not in out
+    assert 'version = ">= 5.0, < 6.0"' in out
+
+
+@pytest.mark.parametrize(
+    ("source", "major"),
+    [
+        ("", 6),  # a bound with no provider to name
+        ("hashicorp/aws", 0),  # a provider with no verified ceiling
+        ("", 0),  # neither
+        ("hashicorp/aws", -1),  # a ceiling that cannot be rendered as one
+    ],
+)
+def test_an_unjustifiable_constraint_is_omitted_rather_than_guessed(source, major):
+    # Both halves read as a checked claim, so a constraint naming the wrong provider or
+    # bounding at a major nobody verified is worse than none. The descriptor guards in
+    # test_structure.py stop a real cloud reaching here; this is the render-time floor.
+    assert (
+        version_constraint_block(provider_source=source, verified_major=major, min_version="5.0")
+        == ""
+    )
+
+
+def test_a_floor_above_the_verified_ceiling_is_refused_rather_than_emitted():
+    """The one case where the two halves contradict each other.
+
+    A recipe requiring 7.x under a ceiling of ``< 7.0`` emits a constraint no version
+    satisfies. ``tofu init`` reports that as "no available releases match", which is
+    true and says nothing about the cause: a recipe was written against a major nobody
+    re-verified, so the *ceiling* is what is stale. Raising here names that.
+    """
+    with pytest.raises(ValueError, match="unsatisfiable"):
+        version_constraint_block(
+            provider_source="hashicorp/aws", verified_major=6, min_version="7.1"
+        )
+
+
+def test_the_files_constraint_takes_the_highest_floor_among_its_blocks():
+    """One file gets one constraint, so it must satisfy every block in it.
+
+    The versions are 5.9 and 5.12 for the reason
+    ``test_a_merged_block_requires_the_highest_provider_version_of_its_parts`` uses
+    them: "5.12" sorts *below* "5.9" as a string, so a lexicographic max understates
+    the requirement and the file fails `init` against a version its own per-policy
+    notes said was enough. These two recipes target *different* resources, so this is
+    the file-wide aggregate rather than the per-merge one that test covers.
+    """
+    low = _recipe(
+        policy_id="low",
+        hcl=HclTarget(
+            resource_type="aws_thing",
+            attributes=(("a", "true"),),
+            import_id_template="{resource_id}",
+            min_provider_version="5.9",
+        ),
+    )
+    high = _recipe(
+        policy_id="high",
+        hcl=HclTarget(
+            resource_type="aws_other",
+            attributes=(("b", "true"),),
+            import_id_template="{resource_id}",
+            min_provider_version="5.12",
+        ),
+    )
+    finding = _finding()
+    for pairs in ([(low, finding), (high, finding)], [(high, finding), (low, finding)]):
+        out = render_hcl(
+            pairs,
+            version=VERSION,
+            generated_at=STAMP,
+            provider_source="hashicorp/aws",
+            verified_major=6,
+        )
+        assert 'version = ">= 5.12, < 7.0"' in out, "the file understated its own floor"
+
+
+def test_render_hcl_emits_no_constraint_when_the_caller_supplies_no_verified_major():
+    # The defaults keep a caller that has neither -- every unit test here, and any
+    # future cloud without HCL -- rendering as before, rather than emitting a bound it
+    # cannot justify. Asserted so the defaults cannot quietly grow a made-up ceiling.
+    out = render_hcl([(_recipe(), _finding())], version=VERSION, generated_at=STAMP)
+    assert "required_providers" not in out
+    assert "PROVIDER VERSION" not in out
+
+
+def test_a_file_with_no_remediable_findings_claims_no_provider_version():
+    # A no-results file configures nothing, so a version constraint on it would bound
+    # a provider it never uses -- and would be the only content in the file besides
+    # the header saying nothing was generated.
+    out = render_hcl(
+        [(_recipe(hcl=None), _finding())],
+        version=VERSION,
+        generated_at=STAMP,
+        provider_source="hashicorp/aws",
+        verified_major=6,
+    )
+    assert "No remediable findings" in out
+    assert "required_providers" not in out
+
+
+def test_the_constraint_precedes_the_scope_block_and_every_resource():
+    """Order is a readability claim, and the one place it could silently invert.
+
+    The constraint is *computed* after ``group_targets`` -- it needs the file-wide
+    minimum, which is only known once every target is merged -- but it must be
+    *rendered* before the scope statement, because a reader scanning from the top has
+    to reach the version requirement before the first block that depends on it.
+    """
+    unit = _aws_unit(account_id="111111111111", region="eu-west-1")
+    out = render_hcl(
+        list(unit.pairs),
+        version=VERSION,
+        generated_at=STAMP,
+        unit=unit,
+        command=AWS.command,
+        scope_block=scope_block,
+        provider_source=AWS.tf_provider_source,
+        verified_major=AWS.tf_provider_verified_major,
+    )
+    assert out.index("PROVIDER VERSION") < out.index("SCOPE:") < out.index("import {")
+
+
+def test_the_constraint_says_which_half_of_the_range_was_actually_verified():
+    """The floor and the ceiling are different kinds of claim, and it must say so.
+
+    The ceiling is "we verified this major". The floor is the recipes' own
+    ``min_provider_version`` -- the release at which the arguments first existed --
+    which for AWS is 5.0 while verification happened on 6.x. So the emitted
+    ``>= 5.0, < 7.0`` is *not* a verified range, and a block headed "Verified against
+    hashicorp/aws 6.x" immediately above it invites reading it as one.
+    """
+    out = version_constraint_block(
+        provider_source="hashicorp/aws", verified_major=6, min_version="5.0"
+    )
+    assert "not a verified range" in out
+
+
+def test_a_range_wholly_inside_the_verified_major_does_not_warn_about_itself():
+    """The Azure case, and the reason the caveat is conditional rather than always on.
+
+    ``azurerm`` is verified at 5.x and its recipes floor at 5.0, so ``>= 5.0, < 6.0``
+    admits nothing outside the tested major. Printing the AWS caveat here would tell the
+    reader their constraint allows untested versions when it does not, and the fix it
+    offers -- pin to 5.x -- is what the constraint already says.
+    """
+    out = version_constraint_block(
+        provider_source="hashicorp/azurerm", verified_major=5, min_version="5.0"
+    )
+    assert 'version = ">= 5.0, < 6.0"' in out
+    assert "not a verified range" not in out
 
 
 # ---------------------------------------------------------------------------
