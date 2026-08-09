@@ -209,8 +209,10 @@ The counts in `sample-run.azure.txt` reconcile:
   call so that an exit-1 reached *after* a mutation would still fail.
 - The cross-subscription record is asserted absent from every artifact by name, not only by the
   transcript diff — a diff alone would pass if someone regenerated the sample after the guard broke.
-- Every recipe behind these artifacts passes `azremgen verify` on all three axes: the `azure.mgmt.*`
-  SDK models bundled with `az`, the `azurerm` provider schema, and `az`'s own flag surface.
+- Every recipe behind these artifacts passes `azremgen verify` on all four axes: the `azure.mgmt.*`
+  SDK models bundled with `az`, the `azurerm` provider schema, `az`'s own flag surface, and the Tenable
+  policy catalog — the last confirming these recipes are keyed to policy ids that still exist, since a
+  retired one yields no artifact rather than a wrong one.
 
 ## What this sample cannot tell you
 

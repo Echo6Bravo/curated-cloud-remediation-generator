@@ -71,9 +71,9 @@ def all_recipes() -> tuple[Recipe, ...]:
 
     Delegates to :mod:`remgen.providers.azure.recipes`, which discovers its
     per-service modules rather than listing them. This used to be a module-level
-    ``()`` with a comment promising recipes once each had passed all three axes; the
-    promise is now kept in that package, where each recipe records the measurement
-    beside itself.
+    ``()`` with a comment promising recipes once each had passed all three cloud axes;
+    the promise is now kept in that package, where each recipe records the measurement
+    beside itself -- against four axes, since the policy id is checked too.
 
     Coverage remains partial by design. Everything without a recipe is reported by
     ``azremgen policies --unsupported``, so a gap is visible rather than silent --
@@ -303,6 +303,11 @@ AZURE = Provider(
     # registry.opentofu.org/hashicorp/azurerm under OpenTofu and
     # registry.terraform.io/hashicorp/azurerm under Terraform.
     tf_provider_source="hashicorp/azurerm",
+    # 5, not 6: azurerm's newest major is 5.x, which is what these recipes were probed
+    # against and what CI resolves. Declaring 6 would emit a ceiling admitting a major
+    # that does not exist yet and has verified nothing -- exactly the unbounded case
+    # this field closes, one release later.
+    tf_provider_verified_major=5,
     # Implemented, and the first Azure axis that can actually check something. It asks
     # `az` itself rather than reading a shipped index, because Azure ships no
     # equivalent of AWS's ac.index -- see remgen.providers.azure.cli_surface for the

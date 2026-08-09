@@ -1,5 +1,5 @@
 
-azremgen 0.2.1 -- generated 2026-08-08T14:02:50+00:00
+azremgen 0.2.1 -- generated 2026-08-09T17:50:31+00:00
 
   Records read:         10
     usable findings:    7
@@ -10,7 +10,7 @@ azremgen 0.2.1 -- generated 2026-08-08T14:02:50+00:00
   Remediations written: 5
     no recipe:          1
 
-  Output: artifacts  (6 file(s), 35.4 KB)
+  Output: artifacts  (6 file(s), 37.2 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 subscriptions in azure.
   Split by subscription because no format can target more than one subscription at a time.
@@ -20,8 +20,8 @@ azremgen 0.2.1 -- generated 2026-08-08T14:02:50+00:00
   Each file must be run with credentials for the subscription in its name.
     remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.sh  (6.8 KB)
     remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.sh  (3.8 KB)
-    remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.tf  (8.9 KB)
-    remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.tf  (4.0 KB)
+    remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.tf  (9.8 KB)
+    remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.tf  (4.9 KB)
     README.md  (8.1 KB)
     manifest.json  (3.9 KB)
 

@@ -1,5 +1,5 @@
 
-awsremgen 0.2.1 -- generated 2026-08-08T14:02:17+00:00
+awsremgen 0.2.1 -- generated 2026-08-09T17:50:30+00:00
 
   Records read:         11
     usable findings:    9
@@ -9,7 +9,7 @@ awsremgen 0.2.1 -- generated 2026-08-08T14:02:17+00:00
   Remediations written: 7
     no recipe:          1
 
-  Output: artifacts  (7 file(s), 33.5 KB)
+  Output: artifacts  (7 file(s), 37.2 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 accounts in aws.
   Split by account because no format can target more than one account at a time.
@@ -20,9 +20,9 @@ awsremgen 0.2.1 -- generated 2026-08-08T14:02:17+00:00
   Each file must be run with credentials for the account in its name.
     remediate-aws-111111111111-all-regions.sh  (5.1 KB)
     remediate-aws-222222222222-all-regions.sh  (3.0 KB)
-    remediate-aws-111111111111-us-east-1.tf  (5.1 KB)
-    remediate-aws-111111111111-us-west-2.tf  (2.0 KB)
-    remediate-aws-222222222222-us-east-1.tf  (3.3 KB)
+    remediate-aws-111111111111-us-east-1.tf  (6.3 KB)
+    remediate-aws-111111111111-us-west-2.tf  (3.2 KB)
+    remediate-aws-222222222222-us-east-1.tf  (4.5 KB)
     README.md  (10.5 KB)
     manifest.json  (4.5 KB)
 

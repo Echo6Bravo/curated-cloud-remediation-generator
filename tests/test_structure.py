@@ -293,6 +293,61 @@ def test_a_cloud_id_that_is_not_one_path_segment_is_rejected(cloud):
         )
 
 
+def _descriptor(**overrides):
+    """A minimal valid descriptor, for tests about one field at a time."""
+    kwargs = {
+        "cloud": "aws",
+        "display_name": "AWS",
+        "command": "xremgen",
+        "credential_scope_noun": "account",
+        "region_noun": "region",
+        "hcl_provider_is_region_scoped": True,
+        "all_recipes": lambda: (),
+        "get_recipe": lambda _pid: None,
+        "verify_recipes": lambda _r: (),
+        "describe_model_source": lambda: "none",
+        "render_shell": lambda *a, **k: "",
+        "hcl_scope_block": lambda _u: "",
+    }
+    kwargs.update(overrides)
+    return Provider(**kwargs)
+
+
+def test_a_cloud_that_generates_hcl_must_declare_a_verified_major():
+    """The half of the pair that fails **silently** if it is not caught here.
+
+    A source with no verified major renders a floor and no ceiling, which `init`
+    accepts: it resolves to whatever major is newest on the day the user runs it. So
+    there is no error to notice -- the file simply stops being the file that was
+    tested. Caught at construction because the render path has no way to tell "this
+    cloud has no ceiling yet" from "this cloud wants none".
+    """
+    with pytest.raises(ValueError, match="no upper bound"):
+        _descriptor(tf_provider_source="hashicorp/aws", tf_provider_verified_major=0)
+
+
+def test_a_verified_major_naming_no_provider_is_rejected():
+    # The inverse, and the loud one: the constraint template interpolates the source,
+    # so this would be a KeyError-shaped failure on a user's run. Both directions are
+    # asserted because a guard on one alone leaves the pair able to disagree.
+    with pytest.raises(ValueError, match="needs tf_provider_source"):
+        _descriptor(tf_provider_source="", tf_provider_verified_major=6)
+
+
+def test_both_shipped_clouds_declare_the_major_they_were_actually_verified_against():
+    """Asserted per cloud, because the two genuinely differ and a shared value lies.
+
+    ``hashicorp/aws`` is 6.x while ``hashicorp/azurerm`` is 5.x. One shared default
+    would either overstate Azure's ceiling -- admitting an ``azurerm`` 6 that does not
+    exist and has verified nothing -- or understate AWS's, refusing the major its own
+    samples were validated against. Raising either is a claim that a re-verification
+    happened, so it has to be edited deliberately rather than inherited.
+    """
+    assert AWS.tf_provider_verified_major == 6
+    assert AZURE.tf_provider_verified_major == 5
+    assert AWS.tf_provider_verified_major != AZURE.tf_provider_verified_major
+
+
 def test_a_provider_without_a_command_is_rejected():
     # The command name appears in generated artifacts as the way to regenerate them.
     # An empty one produces an artifact that cannot be traced back to anything.

@@ -64,6 +64,12 @@ AWS = Provider(
     # registry.opentofu.org/hashicorp/aws under OpenTofu and
     # registry.terraform.io/hashicorp/aws under Terraform.
     tf_provider_source="hashicorp/aws",
+    # 6, because 6.x is what the recipes and the committed sample are validated
+    # against -- `tofu init` in CI resolves 6.58.0 at the time of writing. Not a
+    # guess at what is current: raising this asserts a re-verification happened, so
+    # it is bumped by the commit that does one and not before. AWS and Azure differ
+    # here (azurerm is still 5.x), which is why the field is per cloud.
+    tf_provider_verified_major=6,
     verify_cli_surface=_verify_cli_surface,
     describe_cli_surface_source=index_source_description,
 )

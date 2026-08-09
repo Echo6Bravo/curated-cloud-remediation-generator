@@ -232,10 +232,12 @@ The committed sample was checked with real tools rather than substring assertion
 - The account guard was exercised against a stub `aws` reporting a different account: exit `1`, zero
   mutating calls.
 - Regenerating produces byte-identical files apart from the timestamp.
-- Every recipe behind these artifacts passes `awsremgen verify` on all three axes: the AWS service
-  models, the provider schema, and the CLI's own flag surface. `validate` passing is necessary and not
-  sufficient — it accepts a `TODO` stub that would replace a live resource, which is what the schema
-  axis exists to catch.
+- Every recipe behind these artifacts passes `awsremgen verify` on all four axes: the AWS service
+  models, the provider schema, the CLI's own flag surface, and the Tenable policy catalog. `validate`
+  passing is necessary and not sufficient — it accepts a `TODO` stub that would replace a live
+  resource, which is what the schema axis exists to catch. The fourth axis is the one `validate` can
+  never speak to: it confirms the policy ids these recipes are keyed to still exist, since a retired
+  one produces no artifact at all rather than a wrong one.
 
 ## What this sample cannot tell you
 

@@ -126,10 +126,13 @@ else's.
 
 Then prove it end to end:
 
-- `awsremgen verify --provider-schema <schema.json>` passes for the new recipe on **all three** axes.
-  **You must pass the flag.** Without it the HCL axis prints `? not checked` and `verify` still exits
-  `0` — deliberately, since requiring a 19 MB artifact would make the common path fail, and
-  `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass` pins that. So a green exit code is
+- `awsremgen verify --provider-schema <schema.json> --catalog <catalog.json>` passes for the new recipe
+  on **all four** axes. **You must pass both flags.** Without them the HCL and policy axes print
+  `not checked` and `verify` still exits `0` — deliberately, since requiring a 19 MB artifact and a
+  catalog export would make the common path fail, and
+  `test_verify_without_a_schema_says_so_and_does_not_claim_a_pass` and
+  `test_verify_reports_the_policy_axis_and_says_it_did_not_run_without_a_catalog` pin that. So a green
+  exit code is
   *not* evidence your recipe's HCL was checked: the only evidence is the `Schema source:` line in the
   HCL section. Read it. Exit `4` means a check was requested and could not run — an unusable schema
   path, absent service models, a missing CLI surface — which is a different situation from never
@@ -301,6 +304,15 @@ purpose: both were confirmed to agree on the schema facts this tool depends on, 
 coverage. Their plugin caches are keyed separately for the same reason; one shared key would have the
 two jobs evicting each other's provider on every run.
 
+Neither of those is the bound the **generated** HCL carries, which is the third and the only one a
+user inherits. It comes from `Provider.tf_provider_verified_major` (6 for `hashicorp/aws`, 5 for
+`hashicorp/azurerm`) and is emitted as `>= <floor>, < <next major>.0`. Raise it only in the commit that
+re-verifies the recipes against the newer major — running `verify`'s HCL axis against a schema
+generated from it — because the number is a claim that somebody did. Recipes whose
+`min_provider_version` sits above the ceiling are refused at render time rather than emitted as an
+unsatisfiable range, so a recipe written against an unverified major fails in this project rather than
+in a user's workspace.
+
 ### Adding a recipe
 
 `tests/test_recipe_set.py` holds the invariants a new entry has to satisfy, and each one states what
@@ -341,7 +353,7 @@ verified recipes is a directory, not support — do not add one **to claim cover
 `remgen.providers.azure` shipped as a descriptor with no recipes, and it was not an exception to that
 rule — it was the distinction the rule draws. It existed to *test the core*, and every surface said
 so: the README called it out under Known limitations, `verify` reported "nothing to check … this is
-not a pass" on all three axes, and `generate` wrote nothing. That is the bar for landing a descriptor
+not a pass" on every axis, and `generate` wrote nothing. That is the bar for landing a descriptor
 early, and it is still the bar; Azure has recipes now, and the zero-coverage behaviour is pinned
 against an **emptied copy** of the real descriptor rather than deleted, because it is the state your
 new cloud will start in. If you add one, the unimplemented pieces must **raise**, never return a

@@ -1,6 +1,6 @@
 """Curated AWS remediation recipes.
 
-Every recipe here has been verified on three axes, all of which
+Every recipe here has been verified on four axes, all of which
 ``awsremgen verify`` re-checks:
 
 1. The AWS operation and its parameter names, against the botocore service model
@@ -13,6 +13,12 @@ Every recipe here has been verified on three axes, all of which
    source, since the schema does not describe them.
 3. The rendered ``aws`` command's subcommand and flags, against the CLI's own
    flag surface (see :mod:`remgen.providers.aws.cli_surface`).
+4. The policy id, against the Tenable policy catalog. The one axis whose upstream
+   is not AWS, and the one that catches a recipe going *quiet* rather than wrong:
+   a retired policy id matches no finding, so the recipe never fires and produces
+   an empty artifact set that reads as a clean estate. ``verify`` re-checks it only
+   when given ``--catalog``, since there is no live adapter (see
+   :mod:`remgen.core.sources`); every id here was confirmed live when written.
 
 Coverage is intentionally partial. A wrong recipe is worse than a missing one,
 so a policy appears here only once its remediation has been checked end to end.
