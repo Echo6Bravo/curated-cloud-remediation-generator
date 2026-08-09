@@ -20,7 +20,7 @@ Reproduce it exactly:
 azremgen generate --findings examples/findings.azure.sample.json --out ./artifacts -v
 ```
 
-**No `--safety-level` flag, unlike the AWS sample.** All four shipped Azure recipes are `safest`, so
+**No `--safety-level` flag, unlike the AWS sample.** All eight shipped Azure recipes are `safest`, so
 the default already emits every one and passing `caution` would exercise the flag rather than the
 tool. That is a fact about the current recipe set rather than a property of Azure: the day a
 `caution` Azure recipe lands, this command and the committed sample change together.

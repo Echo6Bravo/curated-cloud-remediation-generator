@@ -8,30 +8,40 @@ shape: same four buckets, and rejection classes that **keep the AWS numbers** wh
 the same one. `R2-requires-replacement` means the same thing in both files. A reader who has read one
 register is not learning a second vocabulary, and a class that turns out to be wrong is wrong in both
 places at once. One class here has no AWS counterpart, and it is the interesting one:
-[`R10-not-addressable-by-resource-id`](#r10-not-addressable-by-resource-id-24).
+[`R10-not-addressable-by-resource-id`](#r10-not-addressable-by-resource-id-27).
 
 **Status: desk triage.** Bucket assignment was made from the policy title, the service's API surface,
 and -- new in this pass -- a **measured probe of the `az` command each policy would need**. It is *not*
 the per-recipe three-axis verification `CONTRIBUTING.md` describes; that happens when a recipe is
 written, and it is allowed to overturn an assignment here.
 
-**Two assignments were corrected during the pass, and both are recorded rather than quietly fixed,**
-because they are the same mistake in two costumes.
+**Three assignments were corrected, and all three are recorded rather than quietly fixed,**
+because they are the same mistake in three costumes.
 
 1. A class called `R11-extension-required` was created for the 14 `Microsoft Defender` policies, on the
    theory that they need an `az` extension. They do not: `az security pricing create` is in the base
    CLI. The class had been derived from the *policy name* rather than from probing the command -- the
    identical error that dissolved `R8-out-of-design-scope` in the AWS register. The real constraint is
-   that the Defender plan is subscription-scoped, which is `R10`, so `R11` was dissolved into it.
+   that the Defender plan is subscription-scoped, which is `R10`, so that class was dissolved into it.
+   (The `R11` number is now reused by an unrelated class below. A dissolved class does not reserve its
+   number, and leaving a gap would imply a class this register never describes.)
 2. Five policies sat in `R10` that do not belong there. CosmosDB key-management access, Event Hub and
    Service Bus local authentication, Storage Account local-user authentication, and `SQL Server
    Microsoft Defender` all accept `--ids`. The last is the sharpest: it is *per-server* advanced threat
    protection (`az sql server advanced-threat-protection-setting update`), an entirely different thing
    from the subscription-wide Defender plan it shares a name with. All five moved to *Write a recipe
-   now*, raising the ceiling from 35% to 37%.
+   now*, raising the ceiling from 35% to 37% at the time.
+3. **The `--ids` probe behind the first version of this register was run per *service*, not per
+   *policy*, and writing batch 1 found it.** Storage was probed by confirming `az storage account
+   update --ids` exists -- which it does -- and nine storage policies were listed as actionable on that
+   basis. Three of them are blob *service* properties, set by `az storage account
+   blob-service-properties update`, which takes `--account-name` as a required argument and accepts no
+   `--ids` at all. They are in `R10`. Two more left the ceiling for unrelated reasons found in the same
+   pass: Shared Key access to `R9`, key expiration to `R11`. **The ceiling fell from 37% to 35%.**
 
-Both were caught by reading the members of a class instead of trusting its label. That is what the
-class structure is for, and it is why the corrections stay visible here.
+The first two were caught by reading the members of a class instead of trusting its label. The third
+was caught by writing the recipes, which is the check the other 33 actionable entries have not yet
+had -- so treat the remaining batch sizes as upper bounds, not as counts.
 
 ## Which catalogue this counts
 
@@ -63,16 +73,16 @@ changing the totals.
 
 | Bucket | Policies | Share |
 | --- | --- | --- |
-| Shipped | 4 | 1.8% |
-| Write a recipe now | 42 | 19.4% |
+| Shipped | 8 | 3.7% |
+| Write a recipe now | 33 | 15.2% |
 | Blocked on a prerequisite | 35 | 16.1% |
-| Documented rejection | 136 | 62.7% |
+| Documented rejection | 141 | 65.0% |
 | **Total** | **217** | |
 
-The design ceiling is **81 of 217** (37%). Quoted against the ceiling rather than the
-catalogue, that is the useful output: about 63% of the Azure catalogue cannot be expressed as a
+The design ceiling is **76 of 217** (35%). Quoted against the ceiling rather than the
+catalogue, that is the useful output: about 65% of the Azure catalogue cannot be expressed as a
 single idempotent, reversible, per-resource API call, and the reasons collapse into
-9 classes rather than one judgement per policy.
+10 classes rather than one judgement per policy.
 
 **Azure's ceiling is meaningfully higher than AWS's 26%,** and the reason is worth stating: `az`
 exposes a far more uniform `<service> update --ids` surface than AWS's per-service APIs, so more
@@ -84,9 +94,13 @@ and the holes are invisible until probed -- which is what `R10` is.
 | Policy id | Policy | Category |
 | --- | --- | --- |
 | `f3c5d6e7-d8f0-48fd-97ab-16585ff981f3` | SQL Database is not encrypted with transparent data encryption | Data |
+| `bfa6917c-773b-43d8-acc3-9cb90de0fbde` | Storage Account Azure trusted services access is not enabled | Network |
+| `052f0af6-7341-4da6-b49c-d524f462cd2f` | Storage Account SAS expiration policy is not set | Iam |
+| `a86dc2ab-4069-44b2-b55c-1e46b529eb2d` | Storage Account SFTP is enabled | Data |
 | `29307516-af03-445b-a22c-5dfa62598b22` | Storage Account cross-tenant replication is enabled | Data |
 | `bed905d4-758c-4698-9ed8-4cdd4271eb4e` | Storage Account in transit is not enabled | Data |
 | `0662810d-c71d-46a3-a937-e1c2b24792e4` | Storage Account insecure communication | Network |
+| `e4da24ba-a2c6-4b9e-ae02-0764ed4718a0` | Storage Account local user authentication is enabled | Iam |
 
 ## Write a recipe now
 
@@ -102,7 +116,7 @@ detail to discover afterwards.
 
 | # | Batch | Module | Recipes | Estimate | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 1 | storage | extend | 9 | 4-6 h | Nine recipes into a module that already holds three recipes, so the SDK model, the `azurerm_storage_account` schema and the `--ids` behaviour are all already established. Best coverage-per-hour in the set: SFTP, static-website hosting and Shared Key access each close a distinct exposure with one flag. |
+| 1 | storage | extend | shipped | -- | **Landed.** Four recipes, not the nine originally listed: three of the nine (blob versioning, static website hosting, blob soft delete) are blob *service* properties set by a command that takes no `--ids`, so they moved to `R10`; Shared Key moved to `R9` and key expiration to `R11`. See those classes for the reasoning. The `--ids` probe behind the original nine was run per *service* rather than per *policy*, which is the mistake this row records. |
 | 2 | sql | extend | 4 | 4-6 h | Extends a shipped module. Minimum-TLS is the policy whose *first* attempt was dropped for the `ExactlyOneOf` schema gap recorded in `recipes/__init__.py`; it is back here because `az sql server update --ids` is a CLI path that does not require the credential arguments `azurerm_mssql_server` does. Expect the HCL axis to be the hard part, and expect it to possibly fall to R6. |
 | 3 | rdbms | new | 10 | 11-14 h | The largest batch and the best-understood: eight of the ten are server *parameters* set through one `az mysql/postgres flexible-server parameter set` shape, so recipe two onwards is near-mechanical. Note the module is named for the SDK package (`azure.mgmt.rdbms`), not the command group -- `az postgres` and `az mysql` both live in it, which is why they are one module and not two. |
 | 4 | web | new | 8 | 10-13 h | Eight App Service recipes. Two command shapes -- `az webapp update` and `az webapp config set` -- so the CLI axis has to be established twice. `azurerm_linux_web_app`/`azurerm_windows_web_app` are distinct resource types with a shared schema block, which is the residual risk on the HCL axis. |
@@ -110,7 +124,7 @@ detail to discover afterwards.
 | 6 | servicebus + eventhub | new (paired) | 5 | 7-9 h | Five recipes, two modules, near-identical namespace shapes -- minimum TLS and local auth exist on both. Paired for the same reason the AWS register pairs docdb+neptune: the second module inherits most of the first's reasoning. |
 | 7 | redis + cosmosdb | new | 2 | 6-8 h | Two recipes, two new modules: the worst overhead-to-coverage ratio here, hence last. `az cosmosdb update` disabling key-based metadata write access may prove to be R9 rather than a clean recipe, since existing key-authenticated callers break. |
 
-**Total: 42 recipes, 50-67 h**, plus 5-8 h for this document's rejection register once each
+**Total: 33 recipes, 46-61 h**, plus 5-8 h for this document's rejection register once each
 class is written against its members. Roughly 7-10 working days.
 
 ### Basis for the estimates
@@ -153,15 +167,6 @@ width of that ignorance.
 
 | Policy id | Policy | Category |
 | --- | --- | --- |
-| `bfa6917c-773b-43d8-acc3-9cb90de0fbde` | Storage Account Azure trusted services access is not enabled | Network |
-| `052f0af6-7341-4da6-b49c-d524f462cd2f` | Storage Account SAS expiration policy is not set | Iam |
-| `a86dc2ab-4069-44b2-b55c-1e46b529eb2d` | Storage Account SFTP is enabled | Data |
-| `392599b3-00dc-40bb-9b50-24e6e881eb6a` | Storage Account Shared Key access is enabled | Iam |
-| `8a9a2bc3-4f41-4607-a67e-5b29ca88f2aa` | Storage Account access key has no expiration policy | Data |
-| `77610610-c281-44ea-afd4-f8e8847a7bd2` | Storage Account blob versioning is not enabled | Data |
-| `e4da24ba-a2c6-4b9e-ae02-0764ed4718a0` | Storage Account local user authentication is enabled | Iam |
-| `e11afc3b-7499-4ddb-807c-6dbd78da22ad` | Storage Account soft delete protection is not enabled | Data |
-| `44e127a4-806b-4e78-9899-7b0820f21094` | Storage Account static website hosting is enabled | Data |
 
 **`recipes/web.py`**
 
@@ -287,7 +292,7 @@ Setting an Entra-only admin, or enabling Entra authentication, requires naming *
 
 ## Documented rejection
 
-9 classes, ordered by size. A class is the unit of rejection: a policy is
+10 classes, ordered by size. A class is the unit of rejection: a policy is
 rejected *because it is an instance of one of these*, which is what keeps the register from being a
 heap of unrelated opinions. If a class turns out to be wrong, every member is reconsidered together --
 and this pass has already dissolved one class and moved five policies out of another, so that is a
@@ -296,14 +301,15 @@ live process rather than a disclaimer.
 | Class | Policies | One-line reason |
 | --- | --- | --- |
 | [`R2-requires-replacement`](#r2-requires-replacement-35) | 35 | No in-place API exists. |
-| [`R10-not-addressable-by-resource-id`](#r10-not-addressable-by-resource-id-24) | 24 | No per-resource ARM id to bind the finding to. |
+| [`R10-not-addressable-by-resource-id`](#r10-not-addressable-by-resource-id-27) | 27 | No per-resource ARM id to bind the finding to. |
 | [`R3-policy-document-rewrite`](#r3-policy-document-rewrite-22) | 22 | Target state is a diff against a document with unknown callers. |
 | [`R5-build-out-not-remediation`](#r5-build-out-not-remediation-18) | 18 | Creates net-new subscription-scoped infrastructure. |
 | [`R1-detection-no-target-state`](#r1-detection-no-target-state-14) | 14 | A detection, not a misconfiguration. |
 | [`R4-unbounded-log-ingest`](#r4-unbounded-log-ingest-10) | 10 | One call, unbounded recurring bill. |
 | [`R7-requires-secret-or-rotation`](#r7-requires-secret-or-rotation-7) | 7 | Needs an input no generator can supply. |
 | [`R6-no-partial-update-command`](#r6-no-partial-update-command-4) | 4 | Missing command shape, not a missing recipe. |
-| [`R9-blast-radius-beyond-resource`](#r9-blast-radius-beyond-resource-2) | 2 | Effect extends past the named resource. |
+| [`R9-blast-radius-beyond-resource`](#r9-blast-radius-beyond-resource-3) | 3 | Effect extends past the named resource. |
+| [`R11-no-iac-path-and-preview-cli`](#r11-no-iac-path-and-preview-cli-1) | 1 | No IaC path exists and the only CLI flag is preview. |
 
 ### `R2-requires-replacement` (35)
 
@@ -349,7 +355,7 @@ The largest class, and the same shape as its AWS counterpart. Unmanaged-to-manag
 | `995deb71-0dc4-4104-a89e-fdd4ad3ef4a3` | Virtual Machine is using unmanaged disk | Compute |
 | `bffad34b-cd82-4c77-89a2-be9c704e9a88` | Virtual Machine trusted launch is not enabled | Compute |
 
-### `R10-not-addressable-by-resource-id` (24)
+### `R10-not-addressable-by-resource-id` (27)
 
 **Reason:** No per-resource ARM id to bind the finding to.
 
@@ -360,7 +366,9 @@ Two measured causes, kept in one class because the consequence is identical and 
 * **The update verb exists but takes no `--ids`** (11 members). Probed on a clean Azure CLI 2.89.0: `az keyvault update`, `az acr update`, `az aks update`, `az aks enable-addons`, `az aks disable-addons`, `az batch account set`, `az cognitiveservices account update` and `az bot update` all lack it.
 * **The setting is subscription-scoped** (13 members). The Microsoft Defender plan policies are set with `az security pricing create --name <plan>`, which addresses a *plan* rather than a resource, so there is no id for a per-resource finding to carry.
 
-These become writable if `Recipe` grows a way to express a subscription-scoped or name-addressed command. That is a core-model change, so it would move all 24 at once.
+* **The setting is a sub-resource addressed by account name** (3 members). Blob service properties -- versioning, static website hosting and blob soft delete -- are set by `az storage account blob-service-properties update`, which takes `--account-name` as a *required* argument and accepts no `--ids`. The storage account itself is id-addressable and four of its settings ship as recipes; these three are not settings on the account.
+
+These become writable if `Recipe` grows a way to express a subscription-scoped or name-addressed command. That is a core-model change, so it would move all 27 at once.
 
 | Policy id | Policy | Category |
 | --- | --- | --- |
@@ -388,6 +396,9 @@ These become writable if `Recipe` grows a way to express a subscription-scoped o
 | `773abf2a-2cc4-42f2-aa46-4406dbfaf546` | Microsoft Defender for SQL Servers on Machines is not enabled | Monitoring |
 | `11aecb34-3c8e-469f-8ab5-451153195ec3` | Microsoft Defender for Servers is not enabled | Monitoring |
 | `59833e60-5303-4b18-8dee-09352a369359` | Microsoft Defender for Storage is not enabled | Monitoring |
+| `77610610-c281-44ea-afd4-f8e8847a7bd2` | Storage Account blob versioning is not enabled | Data |
+| `e11afc3b-7499-4ddb-807c-6dbd78da22ad` | Storage Account soft delete protection is not enabled | Data |
+| `44e127a4-806b-4e78-9899-7b0820f21094` | Storage Account static website hosting is enabled | Data |
 
 ### `R3-policy-document-rewrite` (22)
 
@@ -518,16 +529,34 @@ Key Vault key and secret expiration, secret content type, certificate validity p
 | `b62e230a-77b8-444b-9c47-dfeeff5eb2d2` | Key Vault Secret content type is not set | Secrets |
 | `8eaee3e6-c334-438d-95f3-cc372a1a3b0d` | Key Vault Secret expiration is not set | Data |
 
-### `R9-blast-radius-beyond-resource` (2)
+### `R11-no-iac-path-and-preview-cli` (1)
+
+**Reason:** The only `az` path is a preview flag and the provider cannot express it at all.
+
+**A class of one, written because the reason is structural rather than particular to this policy.** Storage Account key expiration has a working `az` flag -- `--key-exp-days` -- and a real SDK property (`KeyPolicy.key_expiration_period_in_days`). Both were probed. It is rejected on the other two counts:
+
+* **`--key-exp-days` is marked `[Preview]`** by `az` itself, which reserves the right to change or remove it without a deprecation cycle. Every other shipped recipe rests on a GA flag.
+* **`key_policy` does not exist anywhere in the `azurerm` provider.** Verified against the provider's own machine-readable schema across all 1103 resource types, not against its documentation. So the IaC axis cannot be satisfied even in principle, and a user managing storage in OpenTofu would have this setting silently reverted on their next apply.
+
+A CLI-only recipe is possible -- one ships in this batch, the trusted-services bypass, whose HCL axis was declined for a different reason. The difference is that the bypass rests on a GA flag whose IaC form exists but cannot be *safely generated*, whereas this one has no IaC form to generate. This becomes writable if `azurerm` adds `key_policy` and the flag reaches GA.
+
+| Policy id | Policy | Category |
+| --- | --- | --- |
+| `8a9a2bc3-4f41-4607-a67e-5b29ca88f2aa` | Storage Account access key has no expiration policy | Data |
+
+### `R9-blast-radius-beyond-resource` (3)
 
 **Reason:** Effect extends past the named resource.
 
 Two members. App Service encryption-in-transit terminates existing HTTP clients, and Key Vault delete protection cannot be turned off once on -- an irreversible setting fails this project's reversibility requirement even though enabling it is a single call. Small class, but it is the one that keeps reversibility from being negotiable.
 
+**`392599b3` Storage Account Shared Key access is enabled is the third member, and it is the one rejection here that all three verification axes *pass*.** `--allow-shared-key-access false`, SDK `allow_shared_key_access` and azurerm `shared_access_key_enabled` are all real and all verified. It is rejected because disabling Shared Key breaks every caller that authenticates with an account key or a SAS -- which is most tooling, including parts of `az` itself -- making it `data_path_impact=True`, hence DISRUPTIVE, and v1 promises no disruptive remediation. `providers/azure/recipes/storage.py` has recorded that exclusion since the module was written, and `tests/test_azure_recipe_set.py` guards it. **An earlier version of this register listed it as actionable, which was wrong**: the write-now table tested whether the axes pass, and the shipping rule is that the axes pass *and* the recipe keeps the v1 safety promise. It is a real remediation and a good one; it is a migration rather than a single call.
+
 | Policy id | Policy | Category |
 | --- | --- | --- |
 | `5cc4e3e7-9781-4560-a5df-b52608a82733` | App Service encryption in transit is not enabled | Data |
 | `4a8b266c-9568-4022-a84f-ada0e28d5a0a` | Key Vault delete protection is not enabled | Data |
+| `392599b3-00dc-40bb-9b50-24e6e881eb6a` | Storage Account Shared Key access is enabled | Iam |
 
 ## Keeping this file honest
 

@@ -214,7 +214,7 @@ jobs:
         # The same concern, one cloud over, and the fix is a check rather than an install
         # because the runner image already ships `az`. Measured, not assumed: with `az`
         # absent the Azure artifacts are byte-identical but the transcript gains
-        # "Warning: 4 recipe(s) could not be verified against the Azure service model" --
+        # "Warning: 8 recipe(s) could not be verified against the Azure service model" --
         # so the diff would fail on a degraded run and the message would point at the
         # sample rather than at the missing CLI. This step makes that failure name its
         # real cause.
@@ -270,7 +270,7 @@ jobs:
           #
           # --safety-level differs by cloud and that is the recipe sets talking: 4 of 5
           # AWS recipes are `caution`, so the default level would emit one remediation and
-          # exercise almost nothing, while all 4 Azure recipes are `safest` and the
+          # exercise almost nothing, while all 8 Azure recipes are `safest` and the
           # default already covers every one. Passing `caution` to Azure would test the
           # flag rather than the tool, and would silently start meaning something else the
           # day a `caution` Azure recipe lands.

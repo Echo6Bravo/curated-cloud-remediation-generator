@@ -36,6 +36,26 @@ both were measured rather than assumed:
 
 The ``az`` path has no equivalent problem: ``storage account update`` targets the
 account by ``--ids`` and changes exactly the one setting named.
+
+**One recipe here ships with ``hcl=None``, which no other recipe in this project
+does.** ``_TRUSTED_SERVICES_BYPASS`` sets ``--bypass AzureServices``, and the
+``azurerm`` equivalent is the ``bypass`` argument inside a ``network_rules`` block
+whose ``default_action`` is ``Required`` -- read from the provider's own schema, not
+its documentation. A finding carries no network rules, so every value we could put
+there is invented, and both possible inventions are harmful in a way the existing
+stub pattern is not:
+
+* ``default_action = "Allow"`` generates configuration that *opens* the account.
+* ``default_action = "Deny"`` generates configuration that cuts off every existing
+  IP rule and VNet subnet, because ``ip_rules`` and ``virtual_network_subnet_ids``
+  are ``Computed`` and their absence from the block empties them on apply.
+
+The five ``_ACCOUNT_STUBS`` risk a replacement *warning* a reviewer can see in a
+plan. This risks a silent network lockout or exposure from a value the tool made up.
+So the HCL axis is declined rather than approximated -- the same rule that keeps the
+Key Vault RBAC recipe out of this package entirely, applied to one axis instead of
+all three. The ``az`` command is verified and safe: ``--bypass`` merges into the
+existing rule set rather than replacing it.
 """
 
 from __future__ import annotations
@@ -229,6 +249,237 @@ _CROSS_TENANT_REPLICATION = Recipe(
     docs_url="https://learn.microsoft.com/en-us/rest/api/storagerp/storage-accounts/update",
 )
 
+# ---------------------------------------------------------------------------
+# SFTP
+#
+# Safety: reversible, free. Disabling SFTP removes a protocol surface; it does not
+# touch stored data, and blob/Data Lake access over HTTPS is unaffected.
+#
+# data_path_impact stays False on the same reading used for HTTPS-only above: this
+# withdraws a protocol rather than dropping or rerouting requests inside one. An
+# SFTP client *will* stop connecting, which is the first caveat -- and unlike the
+# HTTPS case that traffic is not itself the finding, so the caveat is the stronger
+# of the two.
+# ---------------------------------------------------------------------------
+_SFTP_DISABLED = Recipe(
+    policy_id="a86dc2ab-4069-44b2-b55c-1e46b529eb2d",
+    policy_title="Storage Account SFTP is enabled",
+    summary="Disable the SFTP endpoint so the account is reachable only over HTTPS APIs.",
+    api=ApiCall(
+        service="storage",
+        operation="StorageAccountsOperations.update",
+        # SDK property is is_sftp_enabled; the az flag is --enable-sftp and the
+        # azurerm argument is sftp_enabled. Three vocabularies again, each read from
+        # its own source: `enable_sftp` is *not* an SDK property name and was checked
+        # rather than assumed.
+        parameters=("is_sftp_enabled",),
+    ),
+    cli_template=(
+        "az storage account update "
+        "--ids {resource_id} "
+        "--enable-sftp false "
+        "--subscription {account_id}"
+    ),
+    hcl=HclTarget(
+        resource_type="azurerm_storage_account",
+        attributes=(("sftp_enabled", "false"),),
+        import_id_template=_IMPORT_ID,
+        unresolvable_required_attributes=_ACCOUNT_STUBS,
+    ),
+    effort=Effort.LOW,
+    reversible=True,
+    reverse_hint="az storage account update --ids <resource-id> --enable-sftp true",
+    data_path_impact=False,
+    cost_impact=CostImpact.NONE,
+    blocks_iac_destroy=False,
+    caveats=(
+        "Any SFTP client using this account stops working immediately. Unlike the "
+        "HTTPS-only finding, that traffic is not insecure by itself -- SFTP is "
+        "encrypted -- so confirm no data-transfer job depends on it before applying.",
+        "SFTP requires hierarchical namespace, so this recipe is a no-op on accounts "
+        "that never had it enabled. Those accounts do not raise the finding.",
+        "Local users are the identity mechanism SFTP uses. Disabling SFTP leaves any "
+        "configured local users in place but unusable; see the local-user recipe to "
+        "remove that surface as well.",
+    ),
+    docs_url="https://learn.microsoft.com/en-us/rest/api/storagerp/storage-accounts/update",
+)
+
+# ---------------------------------------------------------------------------
+# Local (SFTP/NFS) user authentication
+#
+# Safety: reversible, free, no data-path impact. This is the identity surface SFTP
+# authenticates against -- shared-key-like credentials local to the account rather
+# than Entra ID principals.
+# ---------------------------------------------------------------------------
+_LOCAL_USER_DISABLED = Recipe(
+    policy_id="e4da24ba-a2c6-4b9e-ae02-0764ed4718a0",
+    policy_title="Storage Account local user authentication is enabled",
+    summary="Disable local users so the account authenticates only through Entra ID.",
+    api=ApiCall(
+        service="storage",
+        operation="StorageAccountsOperations.update",
+        # SDK property is is_local_user_enabled, not enable_local_user.
+        parameters=("is_local_user_enabled",),
+    ),
+    cli_template=(
+        "az storage account update "
+        "--ids {resource_id} "
+        "--enable-local-user false "
+        "--subscription {account_id}"
+    ),
+    hcl=HclTarget(
+        resource_type="azurerm_storage_account",
+        attributes=(("local_user_enabled", "false"),),
+        import_id_template=_IMPORT_ID,
+        unresolvable_required_attributes=_ACCOUNT_STUBS,
+    ),
+    effort=Effort.LOW,
+    reversible=True,
+    reverse_hint="az storage account update --ids <resource-id> --enable-local-user true",
+    data_path_impact=False,
+    cost_impact=CostImpact.NONE,
+    blocks_iac_destroy=False,
+    caveats=(
+        "Every local user on this account loses the ability to authenticate. If SFTP "
+        "is in use, this breaks it -- local users are how SFTP clients sign in.",
+        "Reversing restores the setting, and the local user definitions survive it. "
+        "The users' keys and passwords are not deleted by either direction.",
+    ),
+    docs_url="https://learn.microsoft.com/en-us/rest/api/storagerp/storage-accounts/update",
+)
+
+# ---------------------------------------------------------------------------
+# SAS expiration policy
+#
+# Safety: reversible, free, no data-path impact -- and specifically *not* the
+# Shared Key remediation, which is excluded from this module. A SAS expiration
+# policy with the Log action records violations; it does not reject the tokens.
+# That distinction is the whole reason this one is shippable and Shared Key is not.
+#
+# The policy asks that an expiration be *set*, so a value has to be chosen. 90 days
+# is the interval Microsoft's own guidance names as an upper bound for long-lived
+# SAS, and it is stated in the caveats as a starting point rather than a
+# recommendation, because the right value is a property of the workload.
+# ---------------------------------------------------------------------------
+_SAS_EXPIRATION_POLICY = Recipe(
+    policy_id="052f0af6-7341-4da6-b49c-d524f462cd2f",
+    policy_title="Storage Account SAS expiration policy is not set",
+    summary="Set a SAS expiration policy so long-lived shared access signatures are flagged.",
+    api=ApiCall(
+        service="storage",
+        operation="StorageAccountsOperations.update",
+        # Both leaves of the SasPolicy model. drift.py matches property names across
+        # every model class in the package, so a nested leaf verifies without the
+        # recipe naming SasPolicy itself -- see the comment at drift.py:434.
+        parameters=("sas_policy", "sas_expiration_period"),
+    ),
+    cli_template=(
+        "az storage account update "
+        "--ids {resource_id} "
+        "--sas-exp 90.00:00:00 "
+        "--sas-exp-action Log "
+        "--subscription {account_id}"
+    ),
+    hcl=HclTarget(
+        resource_type="azurerm_storage_account",
+        attributes=(),
+        # A nested block, because expiration_period is Required inside sas_policy.
+        # Unlike network_rules, every argument here is suppliable: the period is the
+        # value being set and expiration_action has a safe non-enforcing value, so
+        # nothing is invented and the block is complete.
+        blocks=(
+            (
+                "sas_policy",
+                (
+                    ("expiration_period", '"90.00:00:00"', "DD.HH:MM:SS"),
+                    (
+                        "expiration_action",
+                        '"Log"',
+                        "Log records violations; Block would reject non-conforming SAS",
+                    ),
+                ),
+            ),
+        ),
+        import_id_template=_IMPORT_ID,
+        unresolvable_required_attributes=_ACCOUNT_STUBS,
+    ),
+    effort=Effort.LOW,
+    reversible=True,
+    reverse_hint="az storage account update --ids <resource-id> --sas-exp 00.00:00:00",
+    data_path_impact=False,
+    cost_impact=CostImpact.NONE,
+    blocks_iac_destroy=False,
+    caveats=(
+        "This sets the `Log` action, which records SAS tokens exceeding the period "
+        "without rejecting them. It satisfies the policy and breaks nothing. Changing "
+        "the action to `Block` is the enforcing version and *will* reject "
+        "non-conforming tokens -- that is a data-path change this recipe does not make.",
+        "90 days is a starting point, not a recommendation. The right period is a "
+        "property of the workload; shorten it once the log shows what actually issues "
+        "long-lived SAS.",
+        "The policy applies to SAS created after the change. Existing long-lived "
+        "tokens keep working and are not revoked by setting a policy -- revoking them "
+        "means rotating the account keys.",
+    ),
+    docs_url="https://learn.microsoft.com/en-us/rest/api/storagerp/storage-accounts/update",
+)
+
+# ---------------------------------------------------------------------------
+# Azure trusted services access
+#
+# Safety: reversible, free, no data-path impact. This *grants* a bypass rather than
+# withdrawing access, which is why it breaks nothing -- the finding is that trusted
+# Azure services (Backup, Monitor, Data Factory and the rest) cannot reach an
+# account whose default action is Deny, and the remediation restores that path.
+#
+# hcl=None. The reason is the module docstring's third section, and it is a
+# deliberate one-axis decline rather than an omission.
+# ---------------------------------------------------------------------------
+_TRUSTED_SERVICES_BYPASS = Recipe(
+    policy_id="bfa6917c-773b-43d8-acc3-9cb90de0fbde",
+    policy_title="Storage Account Azure trusted services access is not enabled",
+    summary="Allow trusted Azure services to reach the account through its network rules.",
+    api=ApiCall(
+        service="storage",
+        operation="StorageAccountsOperations.update",
+        # `bypass` lives on NetworkRuleSet rather than on the update-parameters model.
+        # That verifies because drift.py matches across every model class in the
+        # package; it is called out because the name is not on the model an author
+        # would look at first.
+        parameters=("bypass",),
+    ),
+    cli_template=(
+        "az storage account update "
+        "--ids {resource_id} "
+        "--bypass AzureServices Logging Metrics "
+        "--subscription {account_id}"
+    ),
+    hcl=None,
+    effort=Effort.LOW,
+    reversible=True,
+    reverse_hint="az storage account update --ids <resource-id> --bypass None",
+    data_path_impact=False,
+    cost_impact=CostImpact.NONE,
+    blocks_iac_destroy=False,
+    caveats=(
+        "This widens access rather than restricting it: trusted Microsoft services "
+        "gain a path that the account's Deny default action was blocking. That is the "
+        "policy's intent -- those services authenticate with a managed identity and "
+        "are scoped by RBAC -- but it is a grant, so review it as one.",
+        "`--bypass` replaces the whole bypass set rather than adding to it. The value "
+        "here is AzureServices plus Logging and Metrics, which is the `az` default set "
+        "and a superset of what the policy asks for. An account deliberately bypassing "
+        "only Logging ends up with more than it had.",
+        "No IaC form is generated for this recipe. The azurerm equivalent needs a "
+        "`network_rules` block whose required `default_action` a finding cannot "
+        "supply, and both possible stub values are harmful -- one opens the account, "
+        "the other drops its existing IP and subnet allowlist. Apply the command above "
+        "and reconcile your configuration by hand.",
+    ),
+    docs_url="https://learn.microsoft.com/en-us/rest/api/storagerp/storage-accounts/update",
+)
+
 #: Every storage recipe. Aggregated by :mod:`remgen.providers.azure.recipes`.
 #:
 #: **``392599b3`` "Storage Account Shared Key access is enabled" is deliberately not
@@ -238,8 +489,28 @@ _CROSS_TENANT_REPLICATION = Recipe(
 #: tooling, including parts of ``az`` itself -- so it belongs to a tier this recipe
 #: set does not ship: ``data_path_impact=True``, hence DISRUPTIVE, and v1 promises
 #: none. It is a real remediation and a genuinely good one; it is a migration, not a
-#: single call, and shipping it beside three settings that break nothing would
-#: misrepresent it. See ROADMAP.md.
-RECIPES: tuple[Recipe, ...] = (_HTTPS_ONLY, _MIN_TLS, _CROSS_TENANT_REPLICATION)
+#: single call, and shipping it beside settings that break nothing would
+#: misrepresent it. ``AZURE_POLICY_TRIAGE.md`` records it as a rejection for this
+#: reason, so the register and this note now agree; an earlier version of the
+#: register listed it as actionable because all three axes pass, which is true and
+#: was not sufficient.
+#:
+#: **Three more storage policies are absent because they cannot be recipes at all**,
+#: and they are named here because each one *looks* like it belongs in this module:
+#: blob versioning (``77610610``), static website hosting (``44e127a4``) and soft
+#: delete (``e11afc3b``) are blob *service* properties, set by ``az storage account
+#: blob-service-properties update`` -- which takes ``--account-name`` as a required
+#: argument and does not accept ``--ids`` at all. :class:`Recipe` requires
+#: ``{resource_id}`` in ``cli_template``, so there is no template to write. They are
+#: in ``R10-not-addressable-by-resource-id`` in the register.
+RECIPES: tuple[Recipe, ...] = (
+    _HTTPS_ONLY,
+    _MIN_TLS,
+    _CROSS_TENANT_REPLICATION,
+    _SFTP_DISABLED,
+    _LOCAL_USER_DISABLED,
+    _SAS_EXPIRATION_POLICY,
+    _TRUSTED_SERVICES_BYPASS,
+)
 
 __all__ = ["RECIPES"]
