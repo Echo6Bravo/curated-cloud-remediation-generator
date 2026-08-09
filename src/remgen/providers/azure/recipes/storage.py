@@ -317,10 +317,19 @@ _SFTP_DISABLED = Recipe(
 # Safety: reversible, free, no data-path impact. This is the identity surface SFTP
 # authenticates against -- shared-key-like credentials local to the account rather
 # than Entra ID principals.
+#
+# `policy_title` was retitled upstream and this one followed it. It read "Storage
+# Account local user authentication is enabled" -- the same setting, named for what
+# is wrong rather than for what should be true. The `verify` policy axis reported it
+# as a *warning* rather than a failure, which is the correct severity: a retitle
+# leaves the remediation working and only makes the label in generated artifacts
+# stale, so nothing breaks and nothing goes red. That is also why it needed doing
+# deliberately -- a warning nobody acts on is how an artifact ends up describing a
+# policy under a name the reader cannot find in the console.
 # ---------------------------------------------------------------------------
 _LOCAL_USER_DISABLED = Recipe(
     policy_id="e4da24ba-a2c6-4b9e-ae02-0764ed4718a0",
-    policy_title="Storage Account local user authentication is enabled",
+    policy_title="Storage Account default Microsoft Entra ID authentication is not enabled",
     summary="Disable local users so the account authenticates only through Entra ID.",
     api=ApiCall(
         service="storage",

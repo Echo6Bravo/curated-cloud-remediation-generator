@@ -263,6 +263,22 @@ All notable changes to this project are documented here. The format follows
   end of the section rather than deleted, which is the realistic version of that regression.
 
 ### Fixed
+- **A recipe carried a policy title the catalog had renamed, found by the new policy axis rather than by
+  reading.** `e4da24ba` was titled "Storage Account local user authentication is enabled"; upstream is
+  now "Storage Account default Microsoft Entra ID authentication is not enabled" — the same setting,
+  renamed from what is wrong to what should be true. The axis reported it as a **warning, not a
+  failure**, which is the correct severity and also why it needed doing deliberately: the remediation
+  still applies, nothing goes red, and the only casualty is the label in generated artifacts. A warning
+  nobody acts on is how an artifact ends up describing a policy under a name the reader cannot find in
+  the console.
+
+  **No committed sample changed, and that is worth stating rather than leaving as an apparent
+  omission.** `e4da24ba` is not in the Azure fixture, so no artifact ever carried the old title. What
+  did move is the recipe's position in `all_recipes()`, which sorts by title — it now sorts eighth
+  rather than last — and the matching row in `AZURE_POLICY_TRIAGE.md`. Also worth recording: the
+  register gate compares policy **ids** and never reads the title column, so nothing would have caught
+  this row going stale; the `verify` policy axis is the only instrument that sees it.
+
 - **Shipped Azure artifacts contained the sentence "Small incremental AWS cost."** `Recipe.safety_notes`
   lives in `core` and derives its text from a recipe's own fields, and its `CostImpact.LOW` branch named
   a cloud. Nothing had reached that branch before, because until Defender for SQL every recipe with a
