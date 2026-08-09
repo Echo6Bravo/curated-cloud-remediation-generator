@@ -7,36 +7,70 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **`AZURE_POLICY_TRIAGE.md` — every Azure-only policy in the catalogue, assigned to exactly one of
-  four buckets.** 217 policies: shipped (4), write-a-recipe-now (42), blocked on a named prerequisite
-  (35), documented rejection (136). The headline is the **design ceiling: 81 of 217, or 37%** — the
+- **Four new Azure storage recipes — Batch 1 of the Azure register (4 → 8 recipes, all `safest`).**
+  SFTP disabled, local-user authentication disabled, a SAS expiration policy, and allowing trusted
+  Azure services through the account's network rules. Each was probed on all three axes before a line
+  was written: `az --help` for the flag, the `azure.mgmt.storage` models bundled inside `az` for the
+  SDK property, and a generated `azurerm` 5.0.1 schema for the IaC argument. That matters because the
+  three vocabularies genuinely differ — the SFTP setting is `is_sftp_enabled` in the SDK,
+  `--enable-sftp` on the CLI, and `sftp_enabled` in `azurerm`, so guessing one from another produces a
+  recipe that verifies against nothing.
+
+  **The register listed nine policies for this batch and four shipped**, which is the finding rather
+  than a shortfall. Three are blob *service* properties whose command takes no `--ids`, so `Recipe`
+  cannot express them at all and they moved to `R10`; Shared Key access moved to `R9`; and storage key
+  expiration moved to a new class, `R11-no-iac-path-and-preview-cli`, because `--key-exp-days` is
+  `[Preview]` and `key_policy` does not exist anywhere in the `azurerm` schema. Shared Key is the
+  instructive one: it *passes* all three axes, and is still excluded, because disabling it breaks every
+  account-key and SAS caller — `data_path_impact=True`, hence DISRUPTIVE, and v1 promises no disruptive
+  remediation. Passing the axes is necessary, not sufficient.
+- **The first recipe in this project with `hcl=None` — CLI only, deliberately, for the trusted-services
+  bypass.** Every other recipe emits both formats. This one emits no HCL because both possible values
+  of `azurerm`'s `network_rules` block generate configuration that is wrong in a way a reviewer would
+  not see: `default_action = "Allow"` *opens* the account, and `default_action = "Deny"` — required in
+  the block — empties the existing `ip_rules` and `virtual_network_subnet_ids` on apply, because both
+  are `Computed` and absent from generated config reads as "set to none". Emitting nothing is the only
+  honest option; the artifact README says "IaC resource: none; this policy is CLI only". This is a
+  worse hazard than the replacement risk the tool already warns about, because that one is at least
+  visible in a plan. `tests/test_azure_cli.py` grew a CLI-only branch for the same reason — its
+  coverage helper asserted every recipe had an HCL target, and that assumption is now false.
+  four buckets.** 217 policies: shipped (8), write-a-recipe-now (33), blocked on a named prerequisite
+  (35), documented rejection (141). The headline is the **design ceiling: 76 of 217, or 35%** — the
   share of the Azure catalogue that can be expressed as a single idempotent, reversible, per-resource
   API call. That is meaningfully higher than AWS's 26%, because `az <service> update --ids` is a more
   uniform surface than AWS's per-service APIs.
 
   Deliberately the same shape as `AWS_POLICY_TRIAGE.md`, keeping the AWS class numbers where the
   argument is the same one, so a reader is not learning a second vocabulary and a class that turns out
-  to be wrong is wrong in both places at once. The 42 actionable recipes are batched by
+  to be wrong is wrong in both places at once. The actionable recipes are batched by
   **`azure.mgmt` SDK package** rather than by `az` command group — `az postgres` and `az mysql` are
-  both `azure.mgmt.rdbms`, and the SDK name is what `drift.py` resolves. Seven batches, 50–67 h.
+  both `azure.mgmt.rdbms`, and the SDK name is what `drift.py` resolves. Batch 1 landed in this same
+  release (below); the six remaining batches hold 33 recipes, 46–61 h.
 
   One rejection class has no AWS counterpart and is the Azure-specific finding:
-  **`R10-not-addressable-by-resource-id`** (24 policies). `Recipe` requires `cli_template` to name
+  **`R10-not-addressable-by-resource-id`** (27 policies). `Recipe` requires `cli_template` to name
   `{resource_id}`, and an ARM id reaches a command only through `--ids`, which is not universal in
   `az`. `providers/azure/recipes/__init__.py` already recorded this as the reason the planned Key
   Vault RBAC recipe does not exist; the class generalises that one finding to every policy it covers,
-  with two measured causes — 11 where the update verb has no `--ids`, 13 where the setting is
-  subscription-scoped and there is no per-resource id at all.
+  with three measured causes — 11 where the update verb has no `--ids`, 13 where the setting is
+  subscription-scoped and there is no per-resource id at all, and 3 where the setting is a sub-resource
+  addressed by account name rather than by id.
 
-  **Two assignments were corrected during the pass and both are recorded rather than quietly fixed.**
+  **Three assignments were corrected during the pass and all are recorded rather than quietly fixed.**
   A class called `R11-extension-required` was invented for the 14 Microsoft Defender policies on the
   theory that they need an `az` extension; they do not, `az security pricing create` is base CLI. That
   class had been derived from the policy *name* — the identical error that dissolved
   `R8-out-of-design-scope` in the AWS register — so it was dissolved into `R10`. Separately, five
   policies sat in `R10` that accept `--ids`, including `SQL Server Microsoft Defender`, which is
   per-server threat protection rather than the subscription plan it shares a name with. Moving them
-  raised the ceiling from 35% to 37%. Both were found by reading a class's members instead of trusting
-  its label, which is what the class structure is for.
+  raised the ceiling from 35% to 37%. Third, implementing Batch 1 showed that its `--ids` probe had
+  been run per *service* rather than per *policy*, which is not the same question: `az storage account
+  update --ids` exists, but blob *service* properties are set by `az storage account
+  blob-service-properties update`, which requires `--account-name` and accepts no `--ids` at all.
+  Five policies left the ceiling as a result and it fell back to 35% — the direction an honest ceiling
+  moves when the probe gets stricter. All three were found by reading a class's members, or writing its
+  recipes, instead of trusting its label, which is what the class structure is for. The `--ids` claims
+  behind batches 2–7 were made the same per-service way, so their recipe counts are upper bounds.
 
   Like the AWS register, it names what it does *not* cover: 40 `Custom` and
   `KubernetesAdmissionController` policies and 24 uncategorised ones, untriaged by any pass. UDM

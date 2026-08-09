@@ -95,9 +95,9 @@ FINDINGS = [
 #: list is how Azure ended up with a suite that passed while ``generate`` had never
 #: once emitted an Azure artifact.
 #:
-#: Three of the four shipped recipes target one storage account *deliberately*: that is
-#: what makes ``group_targets`` merge in the end-to-end path, so a merge that produced
-#: unparseable HCL fails a real ``tofu validate`` here.
+#: Most shipped recipes target one storage account *deliberately*: that is what makes
+#: ``group_targets`` merge in the end-to-end path, so a merge that produced unparseable
+#: HCL fails a real ``tofu validate`` here.
 _ARM_IDS = {
     "azurerm_storage_account": (
         f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-prod"
@@ -109,14 +109,44 @@ _ARM_IDS = {
     ),
 }
 
+#: ARM ids for recipes that ship **without** an HCL target, keyed by ``api.service``.
+#:
+#: A CLI-only recipe still has to appear in these end-to-end tests -- it renders a real
+#: command into the real script, and that is the axis it does have. But it carries no
+#: ``hcl.resource_type`` to key a fixture on, so the service name is the key instead.
+#: Separate from ``_ARM_IDS`` rather than merged: keying one dict by two different
+#: things would make a missing entry look like a present one for the other kind.
+_CLI_ONLY_ARM_IDS = {
+    "storage": (
+        f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-prod"
+        f"/providers/Microsoft.Storage/storageAccounts/prodlogs01"
+    ),
+}
+
 
 def _covered_findings() -> list[dict]:
     records = []
     for recipe in AZURE.all_recipes():
-        assert recipe.hcl is not None, (
-            f"{recipe.policy_id} carries no HCL target; add one, or give this helper a "
-            f"CLI-only branch and say why the recipe has no importable resource"
-        )
+        if recipe.hcl is None:
+            # A deliberate CLI-only recipe. The trusted-services bypass declines the
+            # HCL axis because `network_rules.default_action` is Required and a finding
+            # cannot supply it; see the rationale in recipes/storage.py. It must still
+            # be exercised here, because its `az` command is generated like any other.
+            resource_id = _CLI_ONLY_ARM_IDS.get(recipe.api.service)
+            assert resource_id, (
+                f"{recipe.policy_id} is CLI-only and no ARM id fixture exists for "
+                f"service {recipe.api.service!r}. Add one to _CLI_ONLY_ARM_IDS, or the "
+                f"end-to-end tests silently stop covering this recipe."
+            )
+            records.append(
+                {
+                    "policyId": recipe.policy_id,
+                    "resourceId": resource_id,
+                    "region": "eastus",
+                    "accountId": SUBSCRIPTION,
+                }
+            )
+            continue
         resource_id = _ARM_IDS.get(recipe.hcl.resource_type)
         assert resource_id, (
             f"no ARM id fixture for {recipe.hcl.resource_type}. A recipe was added for a "
@@ -240,8 +270,12 @@ def test_verify_reports_all_three_axes_against_the_real_recipe_set(env, capsys):
     out = capsys.readouterr().out
     count = len(AZURE.all_recipes())
     assert count, "this test is vacuous without recipes"
+    # The HCL axis reports the number of recipes with an HCL target, which is fewer than
+    # the recipe count once a CLI-only recipe ships. Derived, not offset by a constant.
+    with_hcl = sum(1 for r in AZURE.all_recipes() if r.hcl is not None)
+    assert with_hcl, "no recipe has an HCL target; the HCL section would be vacuous"
     assert f"Verifying {count} recipe(s)" in out
-    assert f"HCL: checking {count} recipe(s)" in out
+    assert f"HCL: checking {with_hcl} recipe(s)" in out
     assert f"CLI: checking {count} recipe(s)" in out
     assert "nothing to check" not in out, (
         "a real recipe set reported as examining nothing; the axis is skipping recipes"
@@ -460,10 +494,18 @@ def test_verify_passes_all_axes_against_the_real_azure_toolchain(
         pytest.fail("tofu is present but no azurerm schema was produced; the HCL axis never ran")
 
     count = len(AZURE.all_recipes())
+    # The HCL axis checks only the recipes that *have* an HCL target, so its count is
+    # not the recipe count once a CLI-only recipe ships. Derived rather than adjusted by
+    # a constant: hardcoding "count - 1" would pass today and silently stop checking the
+    # real number the next time a CLI-only recipe lands.
+    with_hcl = sum(1 for r in AZURE.all_recipes() if r.hcl is not None)
+    assert with_hcl, "no recipe has an HCL target; the HCL axis would examine nothing"
     code = main(["verify", "--provider-schema", str(real_azurerm_schema_path)])
     captured = capsys.readouterr().out
     assert code == 0, captured
-    assert f"All {count} HCL target(s) match the current provider schema." in captured
+    assert f"Verifying {count} recipe(s) against Azure service models." in captured
+    assert f"All {with_hcl} HCL target(s) match the current provider schema." in captured
+    assert f"All {count} recipe(s) render commands the CLI accepts." in captured
     assert "nothing to check" not in captured, "an axis examined nothing and this still passed"
 
 
@@ -485,8 +527,14 @@ _OTHER_SUBSCRIPTION = "99999999-9999-9999-9999-999999999999"
 
 
 def _mismatched_finding() -> dict:
-    """A well-formed finding whose ARM id names a different subscription."""
-    recipe = AZURE.all_recipes()[0]
+    """A well-formed finding whose ARM id names a different subscription.
+
+    Takes the first recipe that *has* an HCL target rather than simply the first recipe:
+    ``all_recipes()`` is ordered by title, and a CLI-only recipe sorting first would make
+    this fixture raise ``AttributeError`` on ``None`` -- turning every scope-conflict test
+    into an error about a fixture rather than a statement about scope handling.
+    """
+    recipe = next(r for r in AZURE.all_recipes() if r.hcl is not None)
     resource_id = _ARM_IDS[recipe.hcl.resource_type].replace(SUBSCRIPTION, _OTHER_SUBSCRIPTION)
     assert _OTHER_SUBSCRIPTION in resource_id, "the fixture failed to substitute a subscription"
     return {
