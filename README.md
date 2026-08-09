@@ -88,7 +88,7 @@ credential-shaped placeholder into generated configuration. And the API axis's o
 The name is literal, and each word in it is a limitation worth stating plainly.
 
 **Curated.** Coverage is partial by design and will stay that way. This release ships **5 recipes**
-for AWS and **4 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
+for AWS and **8 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
 clouds, and most of them are *scriptable* — but scriptable is not the same as safe to script
 universally, and the gap between those two is where an automated remediation hurts someone. Every
 recipe here was written and checked individually against that cloud's own API definitions and
@@ -98,7 +98,7 @@ The clearest evidence that this is curation rather than triage: one Azure remedi
 three verification axes and is still excluded. Disabling Shared Key access on a storage account is a
 genuinely good hardening step, and it breaks every caller using an account key or a SAS — which is
 most tooling, including parts of `az` itself. That is a migration, not a single call, and shipping it
-beside three settings that break nothing would misrepresent it.
+beside seven storage settings that break nothing would misrepresent it.
 
 **Generator, not an agent.** The tool produces text. It holds no cloud credentials, makes no cloud
 API calls, and has no code path that mutates a cloud environment. The artifacts it writes are
@@ -248,8 +248,8 @@ Two consequences of this that are easy to miss:
   different file is a warning that gets skipped.
 
 Of the 5 shipped AWS recipes, **1 is `safest`** and **4 are `caution`** — so a default run is
-conservative, and the majority of the AWS set requires you to opt in explicitly. Of the 4 shipped
-Azure recipes, **4 are `safest`**, which is not a claim that Azure is safer: it is what a first
+conservative, and the majority of the AWS set requires you to opt in explicitly. Of the 8 shipped
+Azure recipes, **8 are `safest`**, which is not a claim that Azure is safer: it is what a first
 recipe set looks like when the riskier candidates are deferred rather than reclassified. The one
 Azure remediation that would have landed in a higher tier was excluded instead — see
 [What this is, and what it is not](#what-this-is-and-what-it-is-not).
@@ -426,11 +426,11 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 
 ## Known limitations
 
-- **Coverage is 5 AWS policies and 4 Azure policies.** If your finding's policy has no recipe, it is
+- **Coverage is 5 AWS policies and 8 Azure policies.** If your finding's policy has no recipe, it is
   reported as unsupported (`-v` lists them). That is the honest answer, not a gap to be filled by
   guessing.
 - **Azure's coverage is 2 services, and one gap is deliberate and named.**
-  `azremgen` covers three storage-account settings and SQL database TDE. Two planned recipes were
+  `azremgen` covers seven storage-account settings and SQL database TDE. Two planned recipes were
   dropped rather than approximated, and both remain visible as unsupported policies:
   Key Vault RBAC (`az keyvault update` does not accept `--ids`, so a template cannot address the
   resource at all) and SQL Server minimum TLS (`azurerm_mssql_server` requires an administrator

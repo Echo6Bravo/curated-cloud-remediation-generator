@@ -194,7 +194,7 @@ batched by SDK package for exactly that reason — the batch is one module, one 
 order in that table is a recommendation, not a rule; taking a whole batch is what makes the estimate
 hold. Every batch member was probed for `--ids` support before being listed, so a policy in that table
 has already cleared item 1 below. A policy in
-[`R10-not-addressable-by-resource-id`](./AZURE_POLICY_TRIAGE.md#r10-not-addressable-by-resource-id-24)
+[`R10-not-addressable-by-resource-id`](./AZURE_POLICY_TRIAGE.md#r10-not-addressable-by-resource-id-27)
 has already *failed* it — do not spend an afternoon rediscovering that, and if you believe a member is
 mis-assigned, say which command and which flag, because two assignments in that class were wrong and
 both were found that way.
