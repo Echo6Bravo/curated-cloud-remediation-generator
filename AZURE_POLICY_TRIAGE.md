@@ -100,9 +100,9 @@ and the holes are invisible until probed -- which is what `R10` is.
 | `052f0af6-7341-4da6-b49c-d524f462cd2f` | Storage Account SAS expiration policy is not set | Iam |
 | `a86dc2ab-4069-44b2-b55c-1e46b529eb2d` | Storage Account SFTP is enabled | Data |
 | `29307516-af03-445b-a22c-5dfa62598b22` | Storage Account cross-tenant replication is enabled | Data |
+| `e4da24ba-a2c6-4b9e-ae02-0764ed4718a0` | Storage Account default Microsoft Entra ID authentication is not enabled | Iam |
 | `bed905d4-758c-4698-9ed8-4cdd4271eb4e` | Storage Account in transit is not enabled | Data |
 | `0662810d-c71d-46a3-a937-e1c2b24792e4` | Storage Account insecure communication | Network |
-| `e4da24ba-a2c6-4b9e-ae02-0764ed4718a0` | Storage Account local user authentication is enabled | Iam |
 
 ## Write a recipe now
 
