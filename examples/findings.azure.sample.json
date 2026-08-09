@@ -31,6 +31,22 @@
       "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
     },
     {
+      "_comment": "The SQL *server* holding the database above, and the first of two CLI-only Azure recipes on it. azurerm spells this `minimum_tls_version` while the SDK and CLI spell it `minimal_tls_version`, but the reason there is no HCL half is the resource's ExactlyOneOf credential requirement, not the spelling. Its critical caveat -- any client that cannot negotiate TLS 1.2 stops connecting immediately -- is what the sample is here to show.",
+      "policyId": "17af7bf3-0f70-4822-bc09-e41bfd97dbdf",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Sql/servers/acme-sql-prod",
+      "resourceName": "acme-sql-prod",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
+      "_comment": "Same server, and the only shipped recipe that COSTS money to keep: Defender for SQL bills per server per month. cost_impact is LOW, which derives to `safest` because the tier formula has no input for 'free to run, not free to keep', so the charge is stated as a critical caveat instead. Two CLI-only recipes on one server also means this resource appears in the .sh twice and in the .tf not at all.",
+      "policyId": "675d3b4d-8168-4bc8-bae2-ebad12102b53",
+      "resourceId": "/subscriptions/8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7/resourceGroups/rg-platform-prod/providers/Microsoft.Sql/servers/acme-sql-prod",
+      "resourceName": "acme-sql-prod",
+      "region": "eastus",
+      "accountId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+    },
+    {
       "_comment": "A SECOND subscription. This is a hard boundary in both formats: an azurerm provider is configured with one subscription_id, and one az login context addresses one subscription, so this must produce its own .sh and its own .tf.",
       "policyId": "bed905d4-758c-4698-9ed8-4cdd4271eb4e",
       "resourceId": "/subscriptions/d27e6b04-93a1-4f58-8c7d-31fb9e2a604c/resourceGroups/rg-sandbox/providers/Microsoft.Storage/storageAccounts/acmesandboxdata",

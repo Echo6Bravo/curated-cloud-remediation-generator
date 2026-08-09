@@ -50,6 +50,37 @@
       "region": "us-east-1",
       "accountId": "222222222222"
     },
+    {
+      "_comment": "Automatic minor version upgrade on the SAME instance as the deletion-protection finding above. Deliberate: both recipes target aws_db_instance and both declare `instance_class` unresolvable, so this is the case where one resource block must carry two settings and ONE TODO -- a merge that emitted the argument twice would not parse.",
+      "policyId": "ca0fddf1-a200-458c-a3cb-b78ad774c3d8",
+      "resourceId": "billing-primary",
+      "resourceName": "billing-primary",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+    {
+      "policyId": "03242d06-4bec-44b5-89fa-0ebb4d926242",
+      "resourceId": "acme-aurora-orders",
+      "resourceName": "acme-aurora-orders",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+    {
+      "_comment": "The same Aurora cluster, and the recipe with NO IaC equivalent: the attribute lives on aws_rds_cluster_instance, which cannot be imported from a cluster id. So this cluster gets two commands in the .sh and only ONE of them in the .tf. Here to show that split in the sample rather than only in the register.",
+      "policyId": "12ecb360-5e79-49ee-b771-7358670a185d",
+      "resourceId": "acme-aurora-orders",
+      "resourceName": "acme-aurora-orders",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
+    {
+      "_comment": "CLI-only, and the finding in this fixture whose remediation withdraws access someone may be using: the recipe's critical caveat says to confirm no cross-account restore depends on it. The snapshot name says `shared`, which is exactly the case that caveat is about.",
+      "policyId": "b03ad608-ad17-4165-95bd-3611db4f2185",
+      "resourceId": "billing-primary-2024-shared",
+      "resourceName": "billing-primary-2024-shared",
+      "region": "us-east-1",
+      "accountId": "222222222222"
+    },
 
     {
       "_comment": "Duplicate of the checkout-sessions finding above. Real exports repeat a finding when the same violation is seen in two scans, or when a record is joined across views. remgen collapses it and reports the count -- emitting two HCL blocks for one resource would not validate.",

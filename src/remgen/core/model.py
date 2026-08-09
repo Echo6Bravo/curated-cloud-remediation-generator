@@ -198,7 +198,7 @@ class Effort(str, Enum):
 
 
 class CostImpact(str, Enum):
-    """Ongoing AWS cost created by applying the remediation.
+    """Ongoing cloud-provider cost created by applying the remediation.
 
     This is a first-class field rather than a prose caveat because usage-scaled
     cost is the failure mode most likely to surprise someone applying a fix
@@ -421,7 +421,7 @@ class Recipe:
 
     @property
     def needs_replacement(self) -> bool:
-        """True when AWS cannot apply this change to an existing resource."""
+        """True when the cloud cannot apply this change to an existing resource."""
         return self.effort is Effort.REPLACEMENT
 
     @property
@@ -462,7 +462,14 @@ class Recipe:
                 "ceiling. Estimate volume before applying fleet-wide."
             )
         elif self.cost_impact is CostImpact.LOW:
-            notes.append("Small incremental AWS cost.")
+            # No cloud named. This note read "Small incremental AWS cost." until the
+            # first Azure recipe with a cost reached it -- and because that recipe is
+            # CLI-only and SAFEST, the sentence appeared inside an Azure shell script
+            # under an Azure banner. `safety_notes` is on `Recipe`, which has no
+            # provider handle, so the name cannot be substituted here; the honest fix
+            # is not to name a cloud in shared code. `Provider.display_name` exists for
+            # text that must.
+            notes.append("Small incremental cost from the cloud provider.")
         if self.blocks_iac_destroy:
             notes.append(
                 "Blocks 'terraform destroy' / 'tofu destroy'. Disable deliberately "

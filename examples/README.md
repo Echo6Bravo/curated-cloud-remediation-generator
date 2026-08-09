@@ -4,7 +4,7 @@ A real run, committed so you can read what `awsremgen` produces before installin
 
 | File | What it is |
 | --- | --- |
-| [`findings.sample.json`](./findings.sample.json) | The input. 10 records, deliberately including a duplicate, an unsupported policy, and two that get rejected. |
+| [`findings.sample.json`](./findings.sample.json) | The input. 15 records, deliberately including a duplicate, an unsupported policy, and two that get rejected. |
 | [`sample-run.txt`](./sample-run.txt) | The console output of the run, verbatim. |
 | [`sample-output/`](./sample-output) | Every file the run wrote. |
 
@@ -19,13 +19,13 @@ Output is deterministic apart from the `Generated:` timestamp, so your artifacts
 which is what keeps this directory from becoming a stale picture of an older version.
 
 `--safety-level caution` is used here rather than the default because it exercises more of the tool.
-The default is `safest`, and on this same input it emits **1** remediation instead of 6, withholds 5,
+The default is `safest`, and on this same input it emits **5** remediations instead of 11, withholds 6,
 and prints the flag needed to include them — see
 [What the safety level actually gates](#what-the-safety-level-actually-gates) below.
 
 ## What the input is designed to show
 
-Six records are ordinary findings across two accounts and two regions. The other four are there
+Eleven records are ordinary findings across two accounts and two regions. The other four are there
 because how a tool handles bad input is more informative than how it handles good input:
 
 | Record | Why it is in the fixture | What awsremgen does |
@@ -38,16 +38,16 @@ because how a tool handles bad input is more informative than how it handles goo
 Rejections are *reported*, never dropped. That is why the counts in `sample-run.txt` reconcile:
 
 ```
-11 records read = 9 usable + 2 rejected
- 9 usable       = 1 duplicate merged + 8 distinct
- 8 distinct     = 7 remediations written + 1 with no recipe
+15 records read = 13 usable + 2 rejected
+13 usable       = 1 duplicate merged + 12 distinct
+12 distinct     = 11 remediations written + 1 with no recipe
 ```
 
 A summary whose numbers do not add up invites you to assume the missing ones were fine.
 
 ## What the output looks like
 
-Seven files from seven remediations:
+Seven files from eleven remediations:
 
 ```
 sample-output/
@@ -55,10 +55,10 @@ sample-output/
 ├── manifest.json                                      ← machine-readable index of every file
 └── aws/
     ├── remediate-aws-111111111111-all-regions.sh      ← 5 remediations
-    ├── remediate-aws-222222222222-all-regions.sh      ← 2 remediations
+    ├── remediate-aws-222222222222-all-regions.sh      ← 6 remediations
     ├── remediate-aws-111111111111-us-east-1.tf        ← 4
     ├── remediate-aws-111111111111-us-west-2.tf        ← 1
-    └── remediate-aws-222222222222-us-east-1.tf        ← 2
+    └── remediate-aws-222222222222-us-east-1.tf        ← 3
 ```
 
 **Why five artifacts and not one.** Two accounts produce two shell scripts, and the HCL splits
@@ -124,13 +124,22 @@ should not apply.
 and unencrypted is one `import` and one `resource` block applying both fixes, labelled with every
 policy it carries and filed under the riskiest of their safety tiers. That is not cosmetic: two
 `import` blocks naming the same resource are *valid configuration* — `validate` passes — and fail
-only at `plan`/`apply` against live infrastructure. Nothing in this sample merges, because no two of
-the six shipped AWS recipes target the same resource type — including the two that both act on
-`acme-web-assets-use1`: versioning writes `aws_s3_bucket_versioning`, Block Public Access writes
-`aws_s3_bucket_public_access_block`, so they are two independent pairs rather than one merged block.
-The Azure sample does exercise the merge, where three recipes share `azurerm_storage_account`.
+only at `plan`/`apply` against live infrastructure.
 
-**`TODO` placeholders are expected, and you must complete them.** Two of the blocks in this sample
+`billing-primary` is where this sample exercises it. Deletion protection and automatic minor version
+upgrade both target `aws_db_instance`, so they merge into one block carrying both arguments — and one
+`instance_class` placeholder, not two, because both recipes declare the same argument unresolvable.
+Note which findings do *not* merge: versioning and Block Public Access both act on
+`acme-web-assets-use1`, but they write `aws_s3_bucket_versioning` and
+`aws_s3_bucket_public_access_block`, so they are two independent pairs. The merge is keyed to the
+resource *type* and identifier, not to the cloud resource a human would name.
+
+`acme-aurora-orders` shows the opposite edge: two recipes, one block. Its cluster deletion-protection
+recipe writes `aws_rds_cluster`, and its automatic-minor-version-upgrade recipe writes nothing at all
+— `aws_rds_cluster` has no such argument, so that fix exists only in the `.sh`. `AWS_POLICY_TRIAGE.md`
+records why.
+
+**`TODO` placeholders are expected, and you must complete them.** Four of the blocks in this sample
 contain them, and the run says so. The AWS provider *parser* requires a few arguments a finding
 cannot supply — a CloudTrail's `s3_bucket_name`, an RDS instance's `instance_class` — so the
 generator emits a type-valid stub instead:
@@ -215,10 +224,10 @@ The same input at each level:
 
 | `--safety-level` | Written | Withheld | What is withheld |
 | --- | --- | --- | --- |
-| `safest` (default) | 2 | 5 | Everything irreversible, cost-scaled, or that blocks `tofu destroy` |
-| `caution` (this sample) | 7 | 0 | — |
+| `safest` (default) | 5 | 6 | Everything irreversible, cost-scaled, or that blocks `tofu destroy` |
+| `caution` (this sample) | 11 | 0 | — |
 
-The default is not a suggestion — you get the two `safest` remediations and an explicit note naming
+The default is not a suggestion — you get the five `safest` remediations and an explicit note naming
 the flag that would include the rest. Withheld work is always counted; a silent cap would read as
 "nothing else to do".
 
@@ -242,6 +251,6 @@ The committed sample was checked with real tools rather than substring assertion
 ## What this sample cannot tell you
 
 The account ids (`111111111111`, `222222222222`) and resource names are synthetic. The **policy
-UUIDs are real** and match the shipped recipes, so a finding you export for one of these six
+UUIDs are real** and match the shipped recipes, so a finding you export for one of these ten
 policies will match. Everything else here is illustrative, and no command in `sample-output/` was
 ever run against AWS — see [SECURITY.md](../SECURITY.md) for why that boundary is not configurable.

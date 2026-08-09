@@ -1,7 +1,7 @@
 {
   "generator": "azremgen (curated-cloud-remediation-generator)",
   "version": "0.2.1",
-  "generated_at": "2026-08-09T17:50:31+00:00",
+  "generated_at": "2026-08-09T19:57:48+00:00",
   "applied": false,
   "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
   "clouds": [
@@ -19,12 +19,26 @@
       "reversible": true,
       "hcl_resource_type": "azurerm_storage_account"
     },
+    "17af7bf3-0f70-4822-bc09-e41bfd97dbdf": {
+      "title": "SQL Server TLS version does not meet minimum requirements",
+      "safety_tier": "safest",
+      "api": "sql.ServersOperations.begin_update",
+      "reversible": true,
+      "hcl_resource_type": null
+    },
     "29307516-af03-445b-a22c-5dfa62598b22": {
       "title": "Storage Account cross-tenant replication is enabled",
       "safety_tier": "safest",
       "api": "storage.StorageAccountsOperations.update",
       "reversible": true,
       "hcl_resource_type": "azurerm_storage_account"
+    },
+    "675d3b4d-8168-4bc8-bae2-ebad12102b53": {
+      "title": "SQL Server Microsoft Defender is not enabled",
+      "safety_tier": "safest",
+      "api": "sql.ServerAdvancedThreatProtectionSettingsOperations.begin_create_or_update",
+      "reversible": true,
+      "hcl_resource_type": null
     },
     "bed905d4-758c-4698-9ed8-4cdd4271eb4e": {
       "title": "Storage Account in transit is not enabled",
@@ -52,10 +66,12 @@
       "region": null,
       "part": null,
       "total_parts": 1,
-      "remediations": 4,
+      "remediations": 6,
       "policy_counts": {
         "0662810d-c71d-46a3-a937-e1c2b24792e4": 1,
+        "17af7bf3-0f70-4822-bc09-e41bfd97dbdf": 1,
         "29307516-af03-445b-a22c-5dfa62598b22": 1,
+        "675d3b4d-8168-4bc8-bae2-ebad12102b53": 1,
         "bed905d4-758c-4698-9ed8-4cdd4271eb4e": 1,
         "f3c5d6e7-d8f0-48fd-97ab-16585ff981f3": 1
       }

@@ -87,8 +87,8 @@ credential-shaped placeholder into generated configuration. And the API axis's o
 
 The name is literal, and each word in it is a limitation worth stating plainly.
 
-**Curated.** Coverage is partial by design and will stay that way. This release ships **6 recipes**
-for AWS and **8 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
+**Curated.** Coverage is partial by design and will stay that way. This release ships **10 recipes**
+for AWS and **10 recipes** for Azure. Tenable Cloud Security has far more policies than that on both
 clouds, and most of them are *scriptable* — but scriptable is not the same as safe to script
 universally, and the gap between those two is where an automated remediation hurts someone. Every
 recipe here was written and checked individually against that cloud's own API definitions and
@@ -260,15 +260,15 @@ Two consequences of this that are easy to miss:
   means "withdraws access something is using today". S3 Block Public Access is reversible, free and
   applied in place, so it derives to `safest` honestly, and it stops anonymous reads the moment it
   runs. A recipe can therefore promote one caveat to render inline beside the command, marked `!!`.
-  Six recipes across both clouds use it; every other caveat lives in the run's `README.md`, because
+  Nine recipes across both clouds use it; every other caveat lives in the run's `README.md`, because
   repeating a paragraph of reference text beside each of hundreds of commands is what made comments
   most of the output. The bar is stated and tested: `caution` and `disruptive` recipes may not use
   it — their banner already says to read every note — and a promoted caveat may not paraphrase a note
   the four fields already produce.
 
-Of the 6 shipped AWS recipes, **2 are `safest`** and **4 are `caution`** — so a default run is
-conservative, and most of the AWS set requires you to opt in explicitly. Of the 8 shipped
-Azure recipes, **8 are `safest`**, which is not a claim that Azure is safer: it is what a first
+Of the 10 shipped AWS recipes, **5 are `safest`** and **5 are `caution`** — so a default run is
+conservative, and half the AWS set requires you to opt in explicitly. Of the 10 shipped
+Azure recipes, **10 are `safest`**, which is not a claim that Azure is safer: it is what a first
 recipe set looks like when the riskier candidates are deferred rather than reclassified. The one
 Azure remediation that would have landed in a higher tier was excluded instead — see
 [What this is, and what it is not](#what-this-is-and-what-it-is-not).
@@ -467,7 +467,7 @@ The result is what [`examples/sample-output/`](./examples/sample-output) contain
 
 ## Known limitations
 
-- **Coverage is 6 AWS policies and 8 Azure policies.** If your finding's policy has no recipe, it is
+- **Coverage is 10 AWS policies and 10 Azure policies.** If your finding's policy has no recipe, it is
   reported as unsupported (`-v` lists them). That is the honest answer, not a gap to be filled by
   guessing.
 - **This tool does not account for any exceptions you may have configured in Tenable Cloud Security.**

@@ -73,10 +73,10 @@ changing the totals.
 
 | Bucket | Policies | Share |
 | --- | --- | --- |
-| Shipped | 8 | 3.7% |
-| Write a recipe now | 33 | 15.2% |
+| Shipped | 10 | 4.6% |
+| Write a recipe now | 29 | 13.4% |
 | Blocked on a prerequisite | 35 | 16.1% |
-| Documented rejection | 141 | 65.0% |
+| Documented rejection | 143 | 65.9% |
 | **Total** | **217** | |
 
 The design ceiling is **76 of 217** (35%). Quoted against the ceiling rather than the
@@ -94,6 +94,8 @@ and the holes are invisible until probed -- which is what `R10` is.
 | Policy id | Policy | Category |
 | --- | --- | --- |
 | `f3c5d6e7-d8f0-48fd-97ab-16585ff981f3` | SQL Database is not encrypted with transparent data encryption | Data |
+| `675d3b4d-8168-4bc8-bae2-ebad12102b53` | SQL Server Microsoft Defender is not enabled | Data |
+| `17af7bf3-0f70-4822-bc09-e41bfd97dbdf` | SQL Server TLS version does not meet minimum requirements | Data |
 | `bfa6917c-773b-43d8-acc3-9cb90de0fbde` | Storage Account Azure trusted services access is not enabled | Network |
 | `052f0af6-7341-4da6-b49c-d524f462cd2f` | Storage Account SAS expiration policy is not set | Iam |
 | `a86dc2ab-4069-44b2-b55c-1e46b529eb2d` | Storage Account SFTP is enabled | Data |
@@ -117,15 +119,15 @@ detail to discover afterwards.
 | # | Batch | Module | Recipes | Estimate | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 1 | storage | extend | shipped | -- | **Landed.** Four recipes, not the nine originally listed: three of the nine (blob versioning, static website hosting, blob soft delete) are blob *service* properties set by a command that takes no `--ids`, so they moved to `R10`; Shared Key moved to `R9` and key expiration to `R11`. See those classes for the reasoning. The `--ids` probe behind the original nine was run per *service* rather than per *policy*, which is the mistake this row records. |
-| 2 | sql | extend | 4 | 4-6 h | Extends a shipped module. Minimum-TLS is the policy whose *first* attempt was dropped for the `ExactlyOneOf` schema gap recorded in `recipes/__init__.py`; it is back here because `az sql server update --ids` is a CLI path that does not require the credential arguments `azurerm_mssql_server` does. Expect the HCL axis to be the hard part, and expect it to possibly fall to R6. |
+| 2 | sql | extend | shipped | -- | **Landed.** Two recipes, not the four listed: `--ledger` does not exist on `az sql db update` at all (`--ledger-on` is create-only, and its own help says the value "cannot be changed after"), so Ledger moved to `R2`; and enabling auditing requires a storage destination -- `--storage-account`, or `--storage-endpoint` with `--storage-key` -- so it moved to `R4` beside the retention policy already there. Both surviving recipes ship CLI-only: minimum-TLS for the `ExactlyOneOf` credential gap that dropped its first attempt, and Defender because `azurerm` models the older `securityAlertPolicies` API with a different import id. This is the same per-*service* rather than per-*policy* probing error batch 1 records. |
 | 3 | rdbms | new | 10 | 11-14 h | The largest batch and the best-understood: eight of the ten are server *parameters* set through one `az mysql/postgres flexible-server parameter set` shape, so recipe two onwards is near-mechanical. Note the module is named for the SDK package (`azure.mgmt.rdbms`), not the command group -- `az postgres` and `az mysql` both live in it, which is why they are one module and not two. |
 | 4 | web | new | 8 | 10-13 h | Eight App Service recipes. Two command shapes -- `az webapp update` and `az webapp config set` -- so the CLI axis has to be established twice. `azurerm_linux_web_app`/`azurerm_windows_web_app` are distinct resource types with a shared schema block, which is the residual risk on the HCL axis. |
 | 5 | compute | new | 4 | 8-11 h | Four recipes across two SDK services (`disk`, `vm`) that share `azure.mgmt.compute`. Managed Disk public-access and data-access-auth are adjacent settings on one resource. |
 | 6 | servicebus + eventhub | new (paired) | 5 | 7-9 h | Five recipes, two modules, near-identical namespace shapes -- minimum TLS and local auth exist on both. Paired for the same reason the AWS register pairs docdb+neptune: the second module inherits most of the first's reasoning. |
 | 7 | redis + cosmosdb | new | 2 | 6-8 h | Two recipes, two new modules: the worst overhead-to-coverage ratio here, hence last. `az cosmosdb update` disabling key-based metadata write access may prove to be R9 rather than a clean recipe, since existing key-authenticated callers break. |
 
-**Total: 33 recipes, 46-61 h**, plus 5-8 h for this document's rejection register once each
-class is written against its members. Roughly 7-10 working days.
+**Total: 29 recipes, 42-55 h**, plus 5-8 h for this document's rejection register once each
+class is written against its members. Roughly 6-9 working days.
 
 ### Basis for the estimates
 
@@ -181,14 +183,9 @@ width of that ignorance.
 | `42efda67-c4d7-450f-adf0-cbbc80624ee3` | App Service public network access is enabled | Compute |
 | `3bc2c66e-6998-4ed2-a658-d5fa6fab2869` | App Service remote debugging is enabled | Compute |
 
-**`recipes/sql.py`**
-
-| Policy id | Policy | Category |
-| --- | --- | --- |
-| `d9bc5094-87bc-49ba-99fe-f0aa7847a144` | SQL Database Ledger is not enabled | Data |
-| `675d3b4d-8168-4bc8-bae2-ebad12102b53` | SQL Server Microsoft Defender is not enabled | Data |
-| `17af7bf3-0f70-4822-bc09-e41bfd97dbdf` | SQL Server TLS version does not meet minimum requirements | Data |
-| `8c61dad4-1c81-4fc8-9683-329176c1e46e` | SQL Server auditing is not enabled | Logging |
+**`recipes/sql.py`** -- both remaining policies shipped; see the *Shipped* table above. The other two
+became rejections on measurement: Ledger is in [`R2`](#r2-requires-replacement-36) and auditing is in
+[`R4`](#r4-unbounded-log-ingest-11).
 
 **`recipes/compute.py`**
 
@@ -300,22 +297,29 @@ live process rather than a disclaimer.
 
 | Class | Policies | One-line reason |
 | --- | --- | --- |
-| [`R2-requires-replacement`](#r2-requires-replacement-35) | 35 | No in-place API exists. |
+| [`R2-requires-replacement`](#r2-requires-replacement-36) | 36 | No in-place API exists. |
 | [`R10-not-addressable-by-resource-id`](#r10-not-addressable-by-resource-id-27) | 27 | No per-resource ARM id to bind the finding to. |
 | [`R3-policy-document-rewrite`](#r3-policy-document-rewrite-22) | 22 | Target state is a diff against a document with unknown callers. |
 | [`R5-build-out-not-remediation`](#r5-build-out-not-remediation-18) | 18 | Creates net-new subscription-scoped infrastructure. |
 | [`R1-detection-no-target-state`](#r1-detection-no-target-state-14) | 14 | A detection, not a misconfiguration. |
-| [`R4-unbounded-log-ingest`](#r4-unbounded-log-ingest-10) | 10 | One call, unbounded recurring bill. |
+| [`R4-unbounded-log-ingest`](#r4-unbounded-log-ingest-11) | 11 | One call, unbounded recurring bill. |
 | [`R7-requires-secret-or-rotation`](#r7-requires-secret-or-rotation-7) | 7 | Needs an input no generator can supply. |
 | [`R6-no-partial-update-command`](#r6-no-partial-update-command-4) | 4 | Missing command shape, not a missing recipe. |
 | [`R9-blast-radius-beyond-resource`](#r9-blast-radius-beyond-resource-3) | 3 | Effect extends past the named resource. |
 | [`R11-no-iac-path-and-preview-cli`](#r11-no-iac-path-and-preview-cli-1) | 1 | No IaC path exists and the only CLI flag is preview. |
 
-### `R2-requires-replacement` (35)
+### `R2-requires-replacement` (36)
 
 **Reason:** No in-place API exists.
 
 The largest class, and the same shape as its AWS counterpart. Unmanaged-to-managed disk conversion, trusted launch, AKS network plugin, node public IPs, host encryption, zone redundancy, an SKU that cannot hold a CMK, a Service Fabric protection level: each is set at create time. Also here is the whole "X is exposed to the internet" family (13 members). Those look like a flag but are not -- the remediation is a private endpoint plus a public-access denial plus a firewall rule set, and doing only the last part is how you take an outage without fixing the finding. Generated HCL for any of these emits a *forces replacement* plan, which for a database or a cluster means data loss proposed as a routine change.
+
+SQL Database Ledger is the newest member and it arrived from the `sql` *batch* rather than from this
+pass, which is worth recording because the batch had already been probed for `--ids`: `az sql db update`
+carries no `--ledger` flag at all, and the create-time `az sql db create --ledger-on` says in its own
+help that "the value of this property cannot be changed after the database has been created." An `--ids`
+probe finds the *command*, not the *flag*, so a batch row can survive that probe and still be a
+replacement. Enabling ledger on an existing database means creating a new one and moving the data.
 
 | Policy id | Policy | Category |
 | --- | --- | --- |
@@ -344,6 +348,7 @@ The largest class, and the same shape as its AWS counterpart. Unmanaged-to-manag
 | `0f69e6fb-bd15-4d63-930c-849bedf5f250` | Machine Learning Workspace is exposed to the internet | Ai |
 | `8efe6f64-9f54-4688-a05a-61f33f227696` | MySQL Database Server is exposed to the internet | Network |
 | `b8e156e1-4c6e-4f23-b46a-6af77e45b7aa` | PostgreSQL Database Server is exposed to the internet | Network |
+| `d9bc5094-87bc-49ba-99fe-f0aa7847a144` | SQL Database Ledger is not enabled | Data |
 | `95e13557-3713-4fb0-83ff-04cffd4b2013` | SQL Server is exposed to the internet | Network |
 | `0dd2991a-4ebe-46ec-8616-4f56113b9a7a` | Service Bus Namespace zone redundancy is not enabled | Data |
 | `d1ff0b27-22d0-41e0-adb1-99020920ea36` | Service Fabric Cluster protection level security is not set | Compute |
@@ -481,11 +486,18 @@ The ten `Missing subscription alarm` policies dominate: each wants an activity-l
 | `8b33f8cd-60fc-4008-9c54-dd4aade3f0a9` | Unusual Network Access Management | AnomalyDetection |
 | `7a64ea40-3b6c-44ad-bd30-cb876fa1b718` | Unusual Permission Management | AnomalyDetection |
 
-### `R4-unbounded-log-ingest` (10)
+### `R4-unbounded-log-ingest` (11)
 
 **Reason:** One call, unbounded recurring bill.
 
 Diagnostic settings, blob/queue/table service logging, AKS Azure Monitor, Key Vault logging, App Service request tracing. Each is genuinely a single idempotent call, and each attaches a destination that then bills per GB ingested for as long as it stays on. The destination -- which workspace, which storage account, what retention -- is a cost decision with no safe default, and picking one for an operator is picking their bill. This is the class most likely to be *partially* overturned: a recipe that requires an existing destination id as a parameter is defensible in a way that one which provisions a workspace is not.
+
+SQL Server auditing arrived from the `sql` batch and is the class's clearest case, because the CLI
+refuses rather than defaulting: `az sql server audit-policy update` states that when the policy is being
+enabled, `--storage-account`, or both `--storage-endpoint` and `--storage-key`, must be specified. There
+is no form of the command that turns auditing on and lets Azure choose where the records go, so the
+destination is not a cost decision the recipe could decline to make -- it is a required argument. Its
+sibling `53e62436` (audit retention) was already here, which is the pair the class predicts.
 
 | Policy id | Policy | Category |
 | --- | --- | --- |
@@ -496,6 +508,7 @@ Diagnostic settings, blob/queue/table service logging, AKS Azure Monitor, Key Va
 | `c7b1b91c-c498-4e21-a3ac-0a042b4b2c3d` | Machine Learning Workspace logging is not enabled | Ai |
 | `2bb461d0-599d-4905-a65b-fdc6f97a2250` | Missing Activity log diagnostic settings | Logging |
 | `53e62436-7aa9-4403-866c-63cd7a5aa3e7` | SQL Server audit retention for storage account is not set | Data |
+| `8c61dad4-1c81-4fc8-9683-329176c1e46e` | SQL Server auditing is not enabled | Logging |
 | `c9e0acfc-f131-4f28-9e54-4351e96f39cc` | Storage Account blob service logging is not enabled | Logging |
 | `0cb1b644-5a38-4e92-bb91-8154cbc2fb4c` | Storage Account queue service logging is not enabled | Logging |
 | `56451881-cb18-4c20-a97a-4384aa8f7922` | Storage Account table service logging is not enabled | Logging |

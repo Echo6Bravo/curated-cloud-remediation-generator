@@ -50,8 +50,8 @@ pass over them should say so in this section rather than quietly changing the to
 
 | Bucket | Policies | Share |
 | --- | --- | --- |
-| Shipped | 6 | 2.5% |
-| Write a recipe now | 24 | 10.1% |
+| Shipped | 10 | 4.2% |
+| Write a recipe now | 20 | 8.4% |
 | Blocked on a prerequisite | 31 | 13.1% |
 | Documented rejection | 176 | 74.3% |
 | **Total** | **237** | |
@@ -69,7 +69,11 @@ expressed as a single idempotent, reversible, per-resource API call, and the rea
 | `8d1140ba-c917-44d7-b2ea-084f9dffe707` | CloudTrail S3 Bucket log file validation is not enabled | Logging |
 | `468d7976-445f-44c2-b9fb-45fb1005f373` | DynamoDB Table delete protection is not enabled | Data |
 | `995e8d78-940a-45bf-bac1-61a1fdb00d7a` | KMS Key automatic key rotation is not enabled | Data |
+| `03242d06-4bec-44b5-89fa-0ebb4d926242` | RDS Cluster delete protection is not enabled | Data |
+| `12ecb360-5e79-49ee-b771-7358670a185d` | RDS Cluster automatic minor version upgrade is not enabled | Data |
+| `ca0fddf1-a200-458c-a3cb-b78ad774c3d8` | RDS Instance automatic minor version upgrade is not enabled | Data |
 | `4d6662cd-9f34-41eb-b152-f24c692d4fbf` | RDS Instance delete protection is not enabled | Data |
+| `b03ad608-ad17-4165-95bd-3611db4f2185` | Public RDS Snapshot | Data |
 | `80b8e9b6-c285-4939-b115-452dfd65bbcc` | S3 Bucket block public access is not enabled | Data |
 | `284b1210-a31e-48ce-97af-f4d825ef132d` | S3 Bucket versioning is not enabled | Data |
 
@@ -82,7 +86,7 @@ the same axis `ROADMAP.md` gives for the module split.
 | # | Batch | Module | Recipes | Estimate | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ec2 | new | 4 | 8-11 h | IMDSv2 closes SSRF-to-credential-theft; the snapshot/image `reset-*-attribute` calls de-publicise data. All four single-call, reversible, free. |
-| 2 | rds | extend | 4 | 5-7 h | Patterns already proven in the module. Cluster delete protection mirrors the shipped instance recipe almost exactly. |
+| 2 | rds | extend | shipped | -- | **Landed.** Four recipes, as listed. Two ship CLI-only: the public-snapshot fix removes one entry from a live account list the generator cannot read, and cluster auto-minor-version has no expressible HCL half at all -- `aws_rds_cluster` declares no such argument, and `aws_rds_cluster_instance` imports by instance id while the finding carries a cluster id. Estimated 5-7 h against 4 recipes; the two CLI-only decisions were the cost, and both were found by the schema axis rejecting a written HCL half rather than by reading the docs. |
 | 3 | docdb + neptune | new (paired) | 5 | 7-9 h | Both RDS-API-shaped, so the rds batch does most of the reasoning. Distinct HCL resource types and import ids is the residual cost. |
 | 4 | s3 | extend | shipped | -- | **Landed.** One recipe, as listed. All four Block Public Access flags are set: the policy asks whether BPA is enabled, and a subset would emit a command that runs cleanly and leaves the finding open. Ships `safest` because every field that derives `caution` is honestly false -- see the module comment for why the tier cannot express "reversible, free, and may still cut off your public website", and what would have to change to fix that. |
 | 5 | apigateway | new | 4 | 9-12 h | Four recipes, one module. Execution logging is adjacent to R4 and moves to rejection if it provisions ingest rather than writing to an existing group. |
@@ -90,8 +94,9 @@ the same axis `ROADMAP.md` gives for the module split.
 | 7 | athena | new | 2 | 4-6 h | `update-work-group` takes a nested config struct; becomes R6 if partial update is not honoured. |
 | 8 | elbv2 + elasticache + dms | 3 new | 3 | 8-11 h | Lowest priority: three module setups for three recipes, the worst overhead-to-coverage ratio in the set. The ELB listener policy may fall to P1 on old-client breakage. |
 
-**Total: 24 recipes, 45-62 h**, plus 6-9 h for this document's rejection register once the
-classes are written against each member. Roughly 7-9 working days.
+**Total remaining: 20 recipes, 40-55 h**, plus 6-9 h for this document's rejection register once
+the classes are written against each member. Roughly 6-8 working days. The original figure was 24
+recipes and 45-62 h; batches 2 and 4 have since landed, which removes 5 recipes and 5-7 h.
 
 ### Basis for the estimates
 
@@ -119,14 +124,7 @@ them. Treat the ranges as the width of that ignorance.
 | `b2449a24-1068-48ed-8587-c6d62c47ea98` | Public EBS Snapshot | Data |
 | `2d9d7738-6ba0-435b-a61c-41d7adf79836` | Public EC2 Image | Data |
 
-**`recipes/rds.py`**
-
-| Policy id | Policy | Category |
-| --- | --- | --- |
-| `03242d06-4bec-44b5-89fa-0ebb4d926242` | RDS Cluster delete protection is not enabled | Data |
-| `b03ad608-ad17-4165-95bd-3611db4f2185` | Public RDS Snapshot | Data |
-| `12ecb360-5e79-49ee-b771-7358670a185d` | RDS Cluster automatic minor version upgrade is not enabled | Data |
-| `ca0fddf1-a200-458c-a3cb-b78ad774c3d8` | RDS Instance automatic minor version upgrade is not enabled | Data |
+**`recipes/rds.py`** -- all four shipped; see the *Shipped* table above.
 
 **`recipes/docdb.py`**
 

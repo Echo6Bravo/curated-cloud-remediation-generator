@@ -51,6 +51,29 @@ GOOD = {
         "region": "us-east-1",
         "accountId": "123456789012",
     },
+    # Public RDS Snapshot: the CLI-only recipe, and it is in this fixture on purpose.
+    # `--format hcl` must say how many findings it could not express, and that message
+    # is computed from the *selected* recipes rather than from the whole catalogue -- so
+    # a fixture with no CLI-only finding made the assertion pass without the message
+    # ever being printed. It did pass that way, silently, for as long as every AWS
+    # recipe had an HCL half.
+    "rds-snapshot": {
+        "policyId": "b03ad608-ad17-4165-95bd-3611db4f2185",
+        "resourceId": "prod-postgres-01-final-snapshot",
+        "region": "eu-west-1",
+        "accountId": "999988887777",
+    },
+}
+
+#: The subset of :data:`GOOD` whose recipe can be expressed as configuration. Tests
+#: that count `import` or `resource` blocks must use this rather than ``len(GOOD)``:
+#: a CLI-only recipe contributes a shell command and no HCL, so the two counts are no
+#: longer the same number. Derived from the recipes rather than hardcoded, so adding
+#: another CLI-only fixture entry cannot leave a stale literal behind.
+GOOD_WITH_HCL = {
+    key: record
+    for key, record in GOOD.items()
+    if any(r.policy_id == record["policyId"] and r.hcl is not None for r in all_recipes())
 }
 
 #: Injection attempts. None of these substrings may appear in any artifact.
@@ -547,6 +570,12 @@ def test_hcl_only_reports_the_remediations_it_could_not_express(env, capsys):
 
     Some policies have no IaC equivalent. Writing nothing for them and saying nothing
     would report a successful run that silently skipped findings it had a recipe for.
+
+    The message is computed from the recipes actually *selected* for these findings, not
+    from the catalogue, so the fixture has to contain a CLI-only finding for this to
+    assert anything -- see ``GOOD["rds-snapshot"]``. Asserted here rather than assumed,
+    because for as long as every AWS recipe had an HCL half this test passed by taking
+    the other branch and never checked the message at all.
     """
     findings = _write(env / "f.json", list(GOOD.values()))
     _run(
@@ -563,11 +592,17 @@ def test_hcl_only_reports_the_remediations_it_could_not_express(env, capsys):
         ]
     )
     out = capsys.readouterr().out
-    cli_only = [r for r in all_recipes() if r.hcl is None]
-    if cli_only:
-        assert "no IaC equivalent" in out
-    else:
-        assert "no IaC equivalent" not in out
+    selected_cli_only = {
+        record["policyId"] for key, record in GOOD.items() if key not in GOOD_WITH_HCL
+    }
+    assert selected_cli_only, (
+        "GOOD contains no CLI-only finding, so the branch below cannot be reached and "
+        "this test would report success without the message being printed once"
+    )
+    assert "no IaC equivalent" in out
+    assert str(len(selected_cli_only)) in out, (
+        f"the count of dropped remediations is missing from:\n{out}"
+    )
 
 
 def test_hcl_only_does_not_mention_todo_placeholders_for_output_it_did_not_write(env, capsys):
@@ -959,7 +994,13 @@ def test_every_recipe_pairs_one_import_with_one_resource(env):
     text = _joined(env / "art", ".tf")
     # A resource block without an import block would create a duplicate resource.
     assert text.count("import {") == text.count('\nresource "')
-    assert text.count("import {") == len(GOOD)
+    # GOOD_WITH_HCL, not GOOD: the fixture includes a CLI-only finding, which is
+    # expected to produce a shell command and no blocks at all.
+    assert text.count("import {") == len(GOOD_WITH_HCL)
+    assert len(GOOD_WITH_HCL) < len(GOOD), (
+        "no CLI-only record left in GOOD, so this test no longer distinguishes "
+        "'one import per HCL recipe' from 'one import per finding'"
+    )
 
 
 # ---------------------------------------------------------------------------

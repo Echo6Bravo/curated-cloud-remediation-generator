@@ -156,9 +156,12 @@ awsremgen generate --findings examples/findings.sample.json --out ./artifacts \
 rm -rf examples/sample-output && mkdir examples/sample-output
 cp -R ./artifacts/. examples/sample-output/    # -R: artifacts are under a per-cloud directory
 
-# Azure. Note: no --safety-level, because all four shipped recipes are `safest` and the
-# default already covers them. The first `caution` Azure recipe changes this command, the
-# committed sample, and CI's parameter table together -- all three, or the diff fails.
+# Azure. Note: no --safety-level, because every shipped recipe is `safest` and the default
+# already covers them. The first `caution` Azure recipe changes this command, the committed
+# sample, and CI's parameter table together -- all three, or the diff fails. Defender for
+# SQL is the near miss and worth knowing about: it bills per server per month, but
+# `CostImpact.LOW` derives `safest`, so it ships under the default banner with the charge
+# stated as a critical caveat.
 rm -rf ./artifacts
 azremgen generate --findings examples/findings.azure.sample.json --out ./artifacts \
   -v > examples/sample-run.azure.txt 2>&1
