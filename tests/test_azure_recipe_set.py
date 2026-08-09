@@ -759,6 +759,28 @@ def _flag_value(command: str, flag: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+#: ``safest`` recipes allowed to carry a recurring charge, each with the reason.
+#:
+#: Populated deliberately and one entry at a time. Every other ``safest`` recipe in
+#: either cloud is free to run *and* free to keep, so the rule below is the only thing
+#: standing between "a default run" and "a default run that adds a monthly bill".
+#: Listing a policy id here is a statement that the charge was weighed against the tier
+#: and that the recipe promotes it to ``critical_caveats`` -- both of which the test
+#: asserts rather than trusting.
+COST_ALLOWLIST: dict[str, str] = {
+    # Microsoft Defender for SQL is billed per server per month. It cannot be declared
+    # USAGE_SCALED (that means a charge growing with usage, as S3 versioning's retained
+    # versions do) and CostImpact.LOW does not appear in the tier formula, so this is
+    # genuinely `safest` with a recurring cost. The alternative was misdeclaring another
+    # field to force CAUTION. The charge is in critical_caveats, beside the command.
+    "675d3b4d-8168-4bc8-bae2-ebad12102b53": (
+        "Defender for SQL is a flat per-server monthly charge; the tier formula has no "
+        "input for 'free to run, not free to keep', so the cost is promoted to "
+        "critical_caveats instead"
+    ),
+}
+
+
 def test_safest_recipes_carry_no_ongoing_cost():
     """``safest`` is the default, so it is the tier that gets run unexamined.
 
@@ -767,15 +789,59 @@ def test_safest_recipes_carry_no_ongoing_cost():
     of a ``safest`` recipe re-implements the derivation and cannot fail. The one thing
     the formula does **not** gate is ``CostImpact.LOW``: a recipe with a small recurring
     charge still derives to ``safest`` and is emitted by a default run.
+
+    If a ``safest`` recipe should be allowed to cost money, add the reason to its caveats
+    and list it in :data:`COST_ALLOWLIST`. An allowlisted recipe is *not* unchecked: it
+    must still promote the charge to ``critical_caveats``, because the whole reason the
+    exemption is tolerable is that the operator reads the cost beside the command rather
+    than in another file.
     """
     for recipe in _recipes():
         if recipe.safety_tier is not SafetyTier.SAFEST:
             continue
+        if recipe.policy_id in COST_ALLOWLIST:
+            assert recipe.cost_impact is not CostImpact.NONE, (
+                f"{recipe.policy_id}: is allowlisted for ongoing cost but declares "
+                f"CostImpact.NONE. Remove it from COST_ALLOWLIST -- a stale entry "
+                f"silently exempts whatever this recipe becomes next."
+            )
+            assert recipe.critical_caveats, (
+                f"{recipe.policy_id}: is allowlisted to carry {recipe.cost_impact.value} "
+                f"ongoing cost while deriving `safest`, but nothing is promoted to "
+                f"`critical_caveats`. The exemption is only defensible if the charge is "
+                f"printed beside the command; in `caveats` it lands in another file."
+            )
+            joined = " ".join(recipe.critical_caveats).lower()
+            assert any(word in joined for word in ("charge", "cost", "billed", "spend")), (
+                f"{recipe.policy_id}: is allowlisted for ongoing cost, but no critical "
+                f"caveat mentions the charge. The reason for the exemption is that the "
+                f"cost is stated inline; this one states something else."
+            )
+            continue
         assert recipe.cost_impact is CostImpact.NONE, (
             f"{recipe.policy_id}: is `safest` -- what a default run emits without review "
             f"-- but carries {recipe.cost_impact.value} ongoing cost. The tier formula "
-            f"does not catch this; only this test does."
+            f"does not catch this; only this test does. If the charge is intended, add "
+            f"the policy id to COST_ALLOWLIST with the reason and promote the cost to "
+            f"critical_caveats."
         )
+
+
+def test_the_cost_allowlist_has_no_stale_entries():
+    """Anti-rot for the allowlist, because a stale entry fails open.
+
+    An id left here after its recipe was removed or renumbered exempts nothing today and
+    silently exempts whatever reuses that id tomorrow -- and the test above would report
+    green either way. Same reasoning as ``test_the_withdrawal_detector_actually_matches_
+    this_set``: an escape hatch is only safe while something checks that it is still
+    pointing at the thing it was opened for.
+    """
+    known = {recipe.policy_id for recipe in _recipes()}
+    stale = sorted(set(COST_ALLOWLIST) - known)
+    assert not stale, (
+        f"COST_ALLOWLIST names {stale}, which no recipe in this set carries. Remove the "
+        f"entr(ies); an id that matches nothing today exempts whatever claims it next."
+    )
 
 
 def test_a_recipe_that_withdraws_existing_access_says_so_inline():

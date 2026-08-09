@@ -1,15 +1,15 @@
 
-awsremgen 0.2.1 -- generated 2026-08-09T17:50:30+00:00
+awsremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
 
-  Records read:         11
-    usable findings:    9
+  Records read:         15
+    usable findings:    13
     rejected:           2
     duplicates merged:  1
-    distinct findings:  8
-  Remediations written: 7
+    distinct findings:  12
+  Remediations written: 11
     no recipe:          1
 
-  Output: artifacts  (7 file(s), 37.2 KB)
+  Output: artifacts  (7 file(s), 48.2 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 accounts in aws.
   Split by account because no format can target more than one account at a time.
@@ -19,14 +19,14 @@ awsremgen 0.2.1 -- generated 2026-08-09T17:50:30+00:00
   Split by region because this cloud's Terraform provider is region-scoped.
   Each file must be run with credentials for the account in its name.
     remediate-aws-111111111111-all-regions.sh  (5.1 KB)
-    remediate-aws-222222222222-all-regions.sh  (3.0 KB)
+    remediate-aws-222222222222-all-regions.sh  (5.7 KB)
     remediate-aws-111111111111-us-east-1.tf  (6.3 KB)
-    remediate-aws-111111111111-us-west-2.tf  (3.2 KB)
-    remediate-aws-222222222222-us-east-1.tf  (4.5 KB)
-    README.md  (10.5 KB)
-    manifest.json  (4.5 KB)
+    remediate-aws-111111111111-us-west-2.tf  (3.3 KB)
+    remediate-aws-222222222222-us-east-1.tf  (6.7 KB)
+    README.md  (15.3 KB)
+    manifest.json  (5.8 KB)
 
-  Note: 2 HCL block(s) contain TODO placeholders for provider-required
+  Note: 4 HCL block(s) contain TODO placeholders for provider-required
   arguments that findings do not carry. Complete them before applying.
 
   No recipe available: 1 finding(s) across 1 policy/policies.
@@ -34,7 +34,7 @@ awsremgen 0.2.1 -- generated 2026-08-09T17:50:30+00:00
     c1f0a4d2-77b3-4e59-9a10-8e2d63b4c7f1
 
 2 input record(s) were rejected and not remediated:
-  [record 9] resource_id: 'acme-logs; aws s3 rb s3://acme-prod --force' contains characters that are not permitted in a cloud identifier. Refusing to generate rather than...
-  [record 10] missing required field(s): region
+  [record 13] resource_id: 'acme-logs; aws s3 rb s3://acme-prod --force' contains characters that are not permitted in a cloud identifier. Refusing to generate rather than...
+  [record 14] missing required field(s): region
 
 Review the output before running anything. This tool made no AWS changes.

@@ -116,10 +116,27 @@ _ARM_IDS = {
 #: ``hcl.resource_type`` to key a fixture on, so the service name is the key instead.
 #: Separate from ``_ARM_IDS`` rather than merged: keying one dict by two different
 #: things would make a missing entry look like a present one for the other kind.
+#:
+#: **Keying by service is coarser than keying by resource type, and the ``sql`` entry is
+#: where that starts to matter.** Both CLI-only SQL recipes -- minimum TLS version and
+#: Defender -- address a *server*, so one id serves both correctly. A future CLI-only
+#: ``sql`` recipe addressing a database would silently inherit this server id and be
+#: exercised against the wrong resource shape, which no assertion here would catch.
+#: Left as-is rather than pre-emptively restructured: the id a CLI-only recipe needs is
+#: determined by its ``cli_template``, which this file cannot introspect, so the honest
+#: guard is this note plus ``test_every_generated_command_carries_ids_and_a_subscription``
+#: rather than a key that looks more precise than it is.
 _CLI_ONLY_ARM_IDS = {
     "storage": (
         f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-prod"
         f"/providers/Microsoft.Storage/storageAccounts/prodlogs01"
+    ),
+    # A server rather than a database: both CLI-only SQL recipes run
+    # `az sql server ...`, and the TDE recipe (which does have an HCL target, so it is
+    # keyed in _ARM_IDS) is the only one addressing a database.
+    "sql": (
+        f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-prod"
+        f"/providers/Microsoft.Sql/servers/mysqlsrv"
     ),
 }
 
@@ -387,6 +404,41 @@ def test_generate_writes_a_script_and_a_tf_for_every_shipped_recipe(env, capsys)
     # Filed under the cloud's own directory, which is what makes a multi-cloud
     # artifacts/ directory reviewable rather than a pile.
     assert all("azure" in part.parts for part in scripts + tfs)
+
+
+def test_no_machine_derived_safety_note_names_a_cloud(env):
+    """Text `core` derives from a recipe's fields must not name a cloud.
+
+    This is a narrower claim than "AWS appears nowhere in an Azure artifact", and it is
+    narrower on purpose: the Azure script and .tf *deliberately* mention AWS twice, to
+    contrast the preflight and the provider block with AWS's, and those sentences are
+    correct in an Azure file. Asserting on the whole artifact would have to allowlist
+    them, and an allowlist of sentences rots into permission for the next leak.
+
+    The defect it guards against did ship. `Recipe.safety_notes` is shared code with no
+    provider handle, and the note for `CostImpact.LOW` read "Small incremental AWS
+    cost." -- so the first Azure recipe with a cost put that sentence into an Azure
+    shell script, under an Azure banner, next to an `az` command. Nothing in the type
+    system was going to catch it, because the string was a literal in `core`.
+
+    Both clouds' recipe sets, since the same shared property renders both, and the
+    failure is symmetric: a note reading "Azure" would be just as wrong in AWS output.
+    """
+    from remgen.providers.aws import AWS
+
+    checked = 0
+    for provider in (AZURE, AWS):
+        for recipe in provider.all_recipes():
+            for note in recipe.safety_notes:
+                checked += 1
+                for cloud in ("AWS", "Azure"):
+                    assert cloud not in note, (
+                        f"{recipe.policy_id}: the machine-derived safety note "
+                        f"{note!r} names {cloud}. safety_notes is on Recipe, which "
+                        f"has no provider, so shared code must not name a cloud at "
+                        f"all -- use Provider.display_name in text that must."
+                    )
+    assert checked, "no safety note was produced, so this check would pass vacuously"
 
 
 def test_every_generated_command_carries_ids_and_a_subscription(env):

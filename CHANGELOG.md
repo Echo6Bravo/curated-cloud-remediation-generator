@@ -7,6 +7,59 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Four RDS recipes and two Azure SQL recipes — Batch 2 of both registers (6/8 → 10/10, one PR across
+  both clouds).** AWS gains cluster deletion protection, instance and cluster automatic minor version
+  upgrade, and public snapshot access; Azure gains SQL Server minimum TLS version and Microsoft
+  Defender for SQL. Both registers' Shipped tables move in the same commit, which the `claims` gate
+  requires. Every recipe was probed on all four axes before a line was written, and all four now pass
+  on both clouds against real inputs — including the policy axis, run against a live catalog export
+  (344 AWS / 324 Azure policies), which is the first time both clouds have been green on all four at
+  once outside CI.
+
+  **Three of the six ship no HCL, which is the finding rather than a shortfall**, and each reason is a
+  measurement recorded beside the recipe:
+  - *RDS cluster minor version upgrade* is the instructive one, because its HCL half was written,
+    measured and then deleted. `aws_rds_cluster` declares no `auto_minor_version_upgrade` argument at
+    all — schema-confirmed absent, since Aurora patches per instance — and retargeting
+    `aws_rds_cluster_instance` fails for a reason no stub can cover: it imports by *instance*
+    identifier while the finding carries a *cluster* identifier, and `import_id_template` accepts no
+    TODO. The generated `import` block would have carried a cluster id that is well-formed, plausible,
+    and names nothing, and the INCOMPLETE banner would not have flagged it because that banner lists
+    *attributes*. The first draft also stubbed `identifier`, which the schema axis rejected in the
+    opposite direction: it is optional+computed, so stubbing it proposes *renaming* the instance — a
+    replacement. Both errors came from reading the docs' argument list instead of the generated schema,
+    which is why both are recorded.
+  - *Public RDS snapshot* cannot be expressed as configuration: removing the `all` group while
+    preserving whichever explicit account ids exist requires knowing the current list, and the
+    generator substitutes whole finding fields rather than reading live state, so any block it emitted
+    would assert an account list it had guessed.
+  - *SQL Server minimum TLS* is the one that **reversed a shipped conclusion.** `recipes/sql.py`'s
+    docstring said this recipe could not be written, because `azurerm_mssql_server` demands an
+    administrator login and password through `ExactlyOneOf`/`AtLeastOneOf` rules the schema does not
+    express. That measurement is still correct and it rules out the *HCL half* — it says nothing about
+    the CLI, and `az sql server update --minimal-tls-version` was available the whole time. The policy
+    had been reported as unsupported on the strength of a conclusion one step wider than its evidence.
+    It now ships CLI-only.
+
+  **Microsoft Defender for SQL is the only recipe in either cloud that costs money to keep and is still
+  `safest`**, and that is a decision rather than a derivation. `safety_tier` is computed from
+  `reversible`, `data_path_impact`, `effort` and `blocks_iac_destroy`; `CostImpact.LOW` appears nowhere
+  in it, so a flat per-server monthly charge derives `safest` and a default run emits it unreviewed.
+  Declaring `USAGE_SCALED` would derive `caution` and would be false — the charge is flat, not scaled,
+  and `USAGE_SCALED` is what the S3 versioning recipe means — and forcing the tier through any other
+  field would mean misdeclaring that field. So the tier stands, the charge is stated in
+  `critical_caveats` where an operator reads it beside the command, and
+  `test_safest_recipes_carry_no_ongoing_cost` allowlists this one policy id **with the reason**, which
+  is the only place in the tree where the combination is visible. The gap is stated rather than
+  papered over: the tier has no input meaning *free to run, not free to keep*, and adding one is a
+  safety-model change rather than a recipe.
+
+  Two API operation names were caught by the axis rather than by review, both in the same shape — the
+  SDK's operations class carries a suffix its model class does not
+  (`ServerAdvancedThreatProtectionSettingsOperations`, not `…Setting`), and `az sql server update`
+  drives a long-running operation so `ServersOperations` declares `begin_update` and no plain
+  `update`. Two vocabularies also disagree by a single letter for the same setting: the SDK and REST
+  API spell it `minimal_tls_version` while `azurerm` spells it `minimum_tls_version`.
 - **A fourth `verify` axis: every recipe's policy id, against the Tenable policy catalog (exit `9`).**
   The three existing axes all ask a *cloud* whether a remediation is still correct. None of them can
   see the case where the remediation is perfect and the **finding** no longer exists: retire a policy
@@ -209,7 +262,49 @@ All notable changes to this project are documented here. The format follows
   passing: ten mutations, each caught by the intended test — including `--ids` guidance moved to the
   end of the section rather than deleted, which is the realistic version of that regression.
 
+### Fixed
+- **Shipped Azure artifacts contained the sentence "Small incremental AWS cost."** `Recipe.safety_notes`
+  lives in `core` and derives its text from a recipe's own fields, and its `CostImpact.LOW` branch named
+  a cloud. Nothing had reached that branch before, because until Defender for SQL every recipe with a
+  cost was AWS and every Azure recipe was free — so the first Azure recipe with a `LOW` cost put an AWS
+  sentence inside an Azure shell script, under an Azure banner, beside an `az` command. Found by
+  generating the new recipe and reading the output, not by review.
+
+  Fixed by **removing the cloud name rather than threading a provider in**: `safety_notes` is a property
+  of `Recipe`, which has no provider handle, and `Provider.display_name` already exists for text that
+  must name a cloud. The note now reads "Small incremental cost from the cloud provider." Two adjacent
+  docstrings said "AWS" for the same reason and are corrected with it.
+
+  **The guard is narrower than the first attempt, deliberately.** A check that scanned whole Azure
+  artifacts for "AWS" failed immediately — on two *intentional* mentions, since the Azure script and
+  `.tf` explain how they differ from the AWS ones on purpose, and an allowlist of approved sentences
+  rots into permission for the next leak. `test_no_machine_derived_safety_note_names_a_cloud` instead
+  checks only the text `core` *derives*, across both clouds and symmetrically on both cloud names, with
+  an anti-vacuity assertion so an empty note set cannot pass it. Proven real rather than trusted for
+  passing: restoring the old string makes it fail.
+
 ### Changed
+- **Both committed samples now exercise the six new recipes, and their inputs record why each record is
+  there.** AWS reads 15 records / 13 usable / 11 remediations across 7 files; Azure reads 12 / 9 / 7
+  across 6. Four AWS records and two Azure records were added, each for a behaviour the old fixtures
+  could not reach — `billing-primary` carries two RDS instance policies so it exercises the merge and
+  the single shared `instance_class` placeholder; `acme-aurora-orders` carries the opposite edge, two
+  policies where only one has an HCL half, so it produces two commands and one block; and
+  `acme-sql-prod` carries both CLI-only Azure recipes, so it appears twice in the `.sh` and not at all
+  in the `.tf`.
+- **`test_hcl_only_reports_the_remediations_it_could_not_express` was passing vacuously and is now
+  non-vacuous.** The CLI computes that message from the findings actually *selected*, not from the
+  catalogue, and no fixture had ever selected a CLI-only recipe — so the assertion was reachable only
+  by accident. Fixed by putting a CLI-only finding in the shared `GOOD` fixture and asserting the
+  message unconditionally, rather than by weakening what is asserted. That made `len(GOOD)` stop
+  equalling the import-block count, which is now a derived `GOOD_WITH_HCL` plus an assertion that it is
+  genuinely smaller than `GOOD` — a hardcoded literal there would go stale on the next CLI-only recipe
+  and read as correct.
+- **`examples/README.azure.md` gains the seventh inline warning, which is about a bill rather than a
+  broken client**, and the arithmetic paragraph explaining why six commands produce three blocks (two
+  CLI-only, one merged). `examples/README.md`'s "nothing in this sample merges" paragraph is rewritten,
+  because it now does. Both files' counts, safety tables and reconciliations were re-derived from the
+  regenerated output rather than edited by hand.
 - **The committed AWS sample now exercises the new recipe, and its input says why that bucket.** The
   first version of this change regenerated byte-identically, because the fixture carried no Block
   Public Access finding — the new mechanism was invisible in the documentation that claims to show real

@@ -1,7 +1,7 @@
 {
   "generator": "awsremgen (curated-cloud-remediation-generator)",
   "version": "0.2.1",
-  "generated_at": "2026-08-09T17:50:30+00:00",
+  "generated_at": "2026-08-09T19:57:48+00:00",
   "applied": false,
   "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
   "clouds": [
@@ -12,6 +12,20 @@
     "222222222222"
   ],
   "policies": {
+    "03242d06-4bec-44b5-89fa-0ebb4d926242": {
+      "title": "RDS Cluster delete protection is not enabled",
+      "safety_tier": "caution",
+      "api": "rds.ModifyDBCluster",
+      "reversible": true,
+      "hcl_resource_type": "aws_rds_cluster"
+    },
+    "12ecb360-5e79-49ee-b771-7358670a185d": {
+      "title": "RDS Cluster automatic minor version upgrade is not enabled",
+      "safety_tier": "safest",
+      "api": "rds.ModifyDBCluster",
+      "reversible": true,
+      "hcl_resource_type": null
+    },
     "284b1210-a31e-48ce-97af-f4d825ef132d": {
       "title": "S3 Bucket versioning is not enabled",
       "safety_tier": "caution",
@@ -53,6 +67,20 @@
       "api": "kms.EnableKeyRotation",
       "reversible": false,
       "hcl_resource_type": "aws_kms_key"
+    },
+    "b03ad608-ad17-4165-95bd-3611db4f2185": {
+      "title": "Public RDS Snapshot",
+      "safety_tier": "safest",
+      "api": "rds.ModifyDBSnapshotAttribute",
+      "reversible": true,
+      "hcl_resource_type": null
+    },
+    "ca0fddf1-a200-458c-a3cb-b78ad774c3d8": {
+      "title": "RDS Instance automatic minor version upgrade is not enabled",
+      "safety_tier": "safest",
+      "api": "rds.ModifyDBInstance",
+      "reversible": true,
+      "hcl_resource_type": "aws_db_instance"
     }
   },
   "files": [
@@ -85,10 +113,14 @@
       "region": null,
       "part": null,
       "total_parts": 1,
-      "remediations": 2,
+      "remediations": 6,
       "policy_counts": {
+        "03242d06-4bec-44b5-89fa-0ebb4d926242": 1,
+        "12ecb360-5e79-49ee-b771-7358670a185d": 1,
         "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
-        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1
+        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1,
+        "b03ad608-ad17-4165-95bd-3611db4f2185": 1,
+        "ca0fddf1-a200-458c-a3cb-b78ad774c3d8": 1
       }
     },
     {
@@ -134,10 +166,12 @@
       "region": "us-east-1",
       "part": null,
       "total_parts": 1,
-      "remediations": 2,
+      "remediations": 4,
       "policy_counts": {
+        "03242d06-4bec-44b5-89fa-0ebb4d926242": 1,
         "284b1210-a31e-48ce-97af-f4d825ef132d": 1,
-        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1
+        "4d6662cd-9f34-41eb-b152-f24c692d4fbf": 1,
+        "ca0fddf1-a200-458c-a3cb-b78ad774c3d8": 1
       }
     }
   ]

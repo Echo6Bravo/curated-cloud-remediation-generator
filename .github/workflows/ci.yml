@@ -268,12 +268,14 @@ jobs:
           # drift. The two runs therefore cannot share one output directory, and each
           # clears it first.
           #
-          # --safety-level differs by cloud and that is the recipe sets talking: 4 of 5
-          # AWS recipes are `caution`, so the default level would emit one remediation and
-          # exercise almost nothing, while all 8 Azure recipes are `safest` and the
-          # default already covers every one. Passing `caution` to Azure would test the
-          # flag rather than the tool, and would silently start meaning something else the
-          # day a `caution` Azure recipe lands.
+          # --safety-level differs by cloud and that is the recipe sets talking: 4 of the
+          # 10 AWS recipes are `caution`, including both deletion-protection recipes, so
+          # the default level would skip them and exercise less than half the set -- while
+          # all 10 Azure recipes are `safest` and the default already covers every one.
+          # Passing `caution` to Azure would test the flag rather than the tool, and would
+          # silently start meaning something else the day a `caution` Azure recipe lands.
+          # The Defender recipe is the near miss: it costs money to keep, but `LOW` cost
+          # derives `safest`, so it does not change this and its charge is a caveat.
           while IFS='|' read -r command findings committed transcript flags; do
             rm -rf ./artifacts
             # shellcheck disable=SC2086

@@ -10,7 +10,7 @@ drift.
 
 | File | What it is |
 | --- | --- |
-| [`findings.azure.sample.json`](./findings.azure.sample.json) | The input. 10 records, including a duplicate, an unsupported policy, and three that get rejected. |
+| [`findings.azure.sample.json`](./findings.azure.sample.json) | The input. 12 records, including a duplicate, an unsupported policy, and three that get rejected. |
 | [`sample-run.azure.txt`](./sample-run.azure.txt) | The console output of the run, verbatim. |
 | [`sample-output-azure/`](./sample-output-azure) | Every file the run wrote. |
 
@@ -20,18 +20,18 @@ Reproduce it exactly:
 azremgen generate --findings examples/findings.azure.sample.json --out ./artifacts -v
 ```
 
-**No `--safety-level` flag, unlike the AWS sample.** All eight shipped Azure recipes are `safest`, so
+**No `--safety-level` flag, unlike the AWS sample.** All ten shipped Azure recipes are `safest`, so
 the default already emits every one and passing `caution` would exercise the flag rather than the
 tool. That is a fact about the current recipe set rather than a property of Azure: the day a
 `caution` Azure recipe lands, this command and the committed sample change together.
 
-**`safest` does not mean nothing stops working, and five of these eight recipes prove it.** The tier
+**`safest` does not mean nothing stops working, and six of these ten recipes prove it.** The tier
 derives from four fields -- reversible, cost, data-path impact, whether it blocks `tofu destroy` --
 and none of them means "withdraws access something is using today". Disabling SFTP, disabling local
-users, requiring HTTPS, requiring TLS 1.2 and disabling cross-tenant replication are each honestly
-`safest` by that formula, and each one breaks a client that depends on what it turns off. Those five
-carry their warning inline, marked `!!`, next to the command rather than in this file. Three of them
-appear in this sample; here is one:
+users, requiring HTTPS, requiring TLS 1.2 on a storage account or a SQL server, and disabling
+cross-tenant replication are each honestly `safest` by that formula, and each one breaks a client that
+depends on what it turns off. Those six carry their warning inline, marked `!!`, next to the command
+rather than in this file. Four of them appear in this sample; here is one:
 
 ```bash
 # !! Any client still connecting over plain HTTP will fail after this change. That
@@ -42,6 +42,13 @@ appear in this sample; here is one:
 Where a merged `.tf` block applies several such policies at once, each line is tagged with the policy
 it comes from -- applying the block applies all of them, so one contributor's warning is not the
 block's whole story.
+
+**The seventh inline warning is not about a broken client; it is about a bill.** Defender for SQL is
+the only shipped recipe that costs money to *keep*: a flat per-server monthly charge. `cost_impact` is
+`LOW`, and the tier formula only promotes `USAGE_SCALED` to `caution` -- it has no input for "free to
+run, not free to keep" -- so the recipe derives `safest` and the charge is stated inline instead. Both
+it and the SQL minimum-TLS recipe are also CLI-only, so `acme-sql-prod` appears twice in the `.sh` and
+not at all in the `.tf`; `AZURE_POLICY_TRIAGE.md` records why for each.
 
 CI regenerates both samples on every push and fails if either drifts.
 
@@ -56,13 +63,18 @@ sample-output-azure/
 ├── README.md
 ├── manifest.json
 └── azure/
-    ├── remediate-azure-8f4a1c62-…-all-regions.sh    ← 4 remediations
+    ├── remediate-azure-8f4a1c62-…-all-regions.sh    ← 6 remediations
     ├── remediate-azure-8f4a1c62-…-all-regions.tf    ← 3 resource blocks
     ├── remediate-azure-d27e6b04-…-all-regions.sh    ← 1
     └── remediate-azure-d27e6b04-…-all-regions.tf    ← 1
 ```
 
-Four files from five remediations, where AWS's seven produced five. The AWS `.tf` output splits again
+Six commands and three blocks in the same subscription, and the gap has two separate causes worth
+telling apart. Two of the six are the CLI-only SQL server recipes, which produce no block at all. Of
+the remaining four, two target `acmeprodlogs01` and merge into one block. Six minus two, minus one
+merged, is three.
+
+Four artifact files from seven remediations, where AWS's eleven produced five. The AWS `.tf` output splits again
 by region because an AWS provider block *is* region-scoped. An `azurerm` provider block carries no
 location at all — every resource names its own — so one `.tf` legitimately spans locations, and
 splitting per location would fragment output without making it more correct.
@@ -184,6 +196,7 @@ more informative than how it handles good input.
 | --- | --- | --- |
 | A second `acmeprodlogs01` record, different policy | Two policies on **one** resource | One `import` and one `resource` block applying both settings, labelled with both policies. Two `import` blocks naming one resource are *valid configuration* — `validate` passes — and fail only at plan/apply. |
 | `acmeeuexports` in `westeurope` | A second location in the same subscription | Written to the **same** `.tf` as the `eastus` resources. See §1. |
+| Two `acme-sql-prod` records, minimum-TLS and Defender | Two **CLI-only** recipes on one resource | Two `az` commands and **no** `.tf` block — neither recipe has an HCL half. This is the case where the two formats deliberately disagree about coverage, and the run says how many remediations `--format hcl` alone would drop. |
 | `acmesandboxdata` in a second subscription | A hard boundary in both formats | Its own `.sh` and its own `.tf`. |
 | A duplicate `acmeeuexports` record | Exports repeat a finding seen in two scans | Collapsed, reported as `duplicates merged: 1`. |
 | Policy `d1b5f4a0…` | A policy with no curated recipe | Reported as `no recipe: 1` and listed by id. **This id is synthetic**, unlike the four real ones — it stands in for Key Vault RBAC, deliberately uncovered because `az keyvault update` accepts no `--ids`. The behaviour shown is what happens to *any* unmatched id. |
@@ -194,9 +207,9 @@ more informative than how it handles good input.
 The counts in `sample-run.azure.txt` reconcile:
 
 ```
-10 records read = 7 usable + 3 rejected
- 7 usable       = 1 duplicate merged + 6 distinct
- 6 distinct     = 5 remediations written + 1 with no recipe
+12 records read = 9 usable + 3 rejected
+ 9 usable       = 1 duplicate merged + 8 distinct
+ 8 distinct     = 7 remediations written + 1 with no recipe
 ```
 
 ## Verified, not just eyeballed
@@ -216,11 +229,12 @@ The counts in `sample-run.azure.txt` reconcile:
 
 ## What this sample cannot tell you
 
-The subscription ids and resource names are synthetic. **Four of the five policy UUIDs are real** and
+The subscription ids and resource names are synthetic. **Six of the seven policy UUIDs are real** and
 match the shipped recipes; `d1b5f4a0…` is not, and is labelled as such above and in the fixture. No
 command in `sample-output-azure/` was ever run against Azure — see [SECURITY.md](../SECURITY.md) for
 why that boundary is not configurable.
 
-Coverage is four recipes. Two Azure policies were investigated and deliberately left uncovered
-because the *shape* of a correct recipe does not exist for them, not because nobody got round to
-them; `src/remgen/providers/azure/recipes/__init__.py` records both measurements.
+Coverage is ten recipes, of which this sample exercises six. Azure policies investigated and
+deliberately left uncovered are not omissions: for each one the *shape* of a correct recipe does not
+exist, `src/remgen/providers/azure/recipes/__init__.py` records the first two measurements, and
+`AZURE_POLICY_TRIAGE.md` records every one since, grouped by the reason.
