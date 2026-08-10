@@ -25,11 +25,74 @@ from any single file.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, dataclass
 
 from remgen import PROJECT_NAME
 from remgen.core.layout import OutputUnit
 from remgen.core.model import Recipe
 from remgen.core.provider import Provider
+
+
+@dataclass(frozen=True)
+class RunCounts:
+    """What became of every record read, at record granularity.
+
+    Recorded because the manifest was otherwise a record of what *worked*: a run
+    that rejected a third of its input was byte-indistinguishable, to any consumer,
+    from a clean one. The counts print to stderr for a human, but stderr prose is
+    not an interface -- a scheduler had nothing to branch on.
+
+    These are the same numbers the console summary prints, and they reconcile the
+    same way::
+
+        records_read = usable_findings + rejected
+        usable_findings = duplicates_merged + distinct_findings
+        distinct_findings = remediated + withheld_by_safety_level + unsupported
+
+    The identity is documented rather than enforced here. Every field is derived
+    inside this tool from data it already holds, so a mismatch is a defect in the
+    generator, and raising over it *after* the artifacts are rendered would abort a
+    run whose files are correct in order to complain about its own bookkeeping. The
+    reconciliation is asserted in the test suite instead, against real fixtures,
+    which is where a generator's arithmetic error should surface.
+
+    Note the one count that is deliberately *not* in this chain: the top-level
+    ``remediations`` in the manifest sums ``files[].remediations``, and a resource
+    fixed by both a script and an HCL block counts twice there -- that is what
+    "remediation" means per file. Mixing it into a per-record chain is precisely the
+    error this dataclass exists to prevent, so the two live under different names.
+
+    Attributes:
+        records_read: Every record the source handed over, usable or not.
+        usable_findings: Records that parsed and validated.
+        rejected: Records that could not be used at all.
+        scope_conflicts: The subset of ``rejected`` that were well-formed but named
+            a credential scope contradicting their own resource identifier. Broken
+            out rather than merged, because these mean a mis-scoped export while the
+            rest mean malformed data, and whoever fixes them looks in a different
+            place. Always 0 for a cloud with no scope-conflict hook.
+        duplicates_merged: Usable findings that collapsed into an earlier one.
+        distinct_findings: Usable findings after deduplication.
+        remediated: Distinct findings that produced output.
+        withheld_by_safety_level: Distinct findings whose recipe exists but sits
+            above the requested ``--safety-level``. Separate from ``unsupported``:
+            this is coverage the tool has and declined to use, that is coverage it
+            never had.
+        unsupported: Distinct findings naming a policy with no curated recipe.
+            Collapsing this into ``rejected`` would make partial catalog coverage
+            look like malformed input.
+    """
+
+    records_read: int = 0
+    usable_findings: int = 0
+    rejected: int = 0
+    scope_conflicts: int = 0
+    duplicates_merged: int = 0
+    distinct_findings: int = 0
+    remediated: int = 0
+    withheld_by_safety_level: int = 0
+    unsupported: int = 0
+
 
 _README = """\
 # {display} remediation artifacts
@@ -253,6 +316,7 @@ def render_manifest(
     version: str,
     generated_at: str,
     command: str = "remgen",
+    counts: RunCounts | None = None,
 ) -> str:
     """Render a machine-readable index of the generated files.
 
@@ -266,6 +330,14 @@ def render_manifest(
     layout rule. ``file`` is kept alongside it as the bare name, because selecting
     by name is the common case and re-deriving it from the path is the kind of
     string manipulation that gets it wrong once.
+
+    Args:
+        counts: What became of every record read -- see :class:`RunCounts`. Written
+            in full even when every field is zero, so an absent ``input`` block means
+            an older generator rather than a run with nothing to report. Defaults to
+            all-zero rather than being required, because this function is also called
+            from tests and from callers that only want the file index; a caller that
+            omits it gets a manifest that claims nothing, not one that lies.
     """
     # Policy detail is declared once in a top-level map and referenced by id per
     # file. Inlining title and tier into every file entry repeated them once per
@@ -273,9 +345,12 @@ def render_manifest(
     policies: dict[str, dict[str, object]] = {}
     entries = []
     for unit in units:
-        counts: dict[str, int] = {}
+        # Named `per_policy`, not `counts`: it used to be `counts`, which shadowed the
+        # `counts` parameter and left the run's own numbers replaced by the last unit's
+        # policy tally by the time the payload was built.
+        per_policy: dict[str, int] = {}
         for recipe, _finding in unit.pairs:
-            counts[recipe.policy_id] = counts.get(recipe.policy_id, 0) + 1
+            per_policy[recipe.policy_id] = per_policy.get(recipe.policy_id, 0) + 1
             if recipe.policy_id not in policies:
                 policies[recipe.policy_id] = {
                     "title": recipe.policy_title,
@@ -305,7 +380,7 @@ def render_manifest(
                 "total_parts": unit.total_parts,
                 "remediations": len(unit.pairs),
                 # policy id -> resource count. Look the id up in "policies".
-                "policy_counts": dict(sorted(counts.items())),
+                "policy_counts": dict(sorted(per_policy.items())),
             }
         )
 
@@ -321,10 +396,17 @@ def render_manifest(
         ),
         "clouds": sorted({unit.cloud for unit in units}),
         "scopes": sorted({unit.scope_id for unit in units}),
+        # Total across the files below, so a resource fixed by both a script and an
+        # HCL block counts twice -- the same sense as `files[].remediations`. The
+        # per-record accounting is in "input", which is a different scale on purpose.
+        "remediations": sum(len(unit.pairs) for unit in units),
+        # What became of every record read, including what did NOT make it into the
+        # files below. See `RunCounts` for the reconciliation identity.
+        "input": asdict(counts or RunCounts()),
         "policies": dict(sorted(policies.items())),
         "files": entries,
     }
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"
 
 
-__all__ = ["render_manifest", "render_readme"]
+__all__ = ["RunCounts", "render_manifest", "render_readme"]

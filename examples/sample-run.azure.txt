@@ -1,5 +1,5 @@
 
-azremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
+azremgen 0.2.1 -- generated 2026-08-10T00:36:48+00:00
 
   Records read:         12
     usable findings:    9
@@ -10,7 +10,7 @@ azremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
   Remediations written: 7
     no recipe:          1
 
-  Output: artifacts  (6 file(s), 44.0 KB)
+  Output: artifacts  (6 file(s), 44.3 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 subscriptions in azure.
   Split by subscription because no format can target more than one subscription at a time.
@@ -23,7 +23,7 @@ azremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
     remediate-azure-8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7-all-regions.tf  (9.8 KB)
     remediate-azure-d27e6b04-93a1-4f58-8c7d-31fb9e2a604c-all-regions.tf  (4.9 KB)
     README.md  (11.7 KB)
-    manifest.json  (4.6 KB)
+    manifest.json  (4.9 KB)
 
   Note: 5 HCL block(s) contain TODO placeholders for provider-required
   arguments that findings do not carry. Complete them before applying.

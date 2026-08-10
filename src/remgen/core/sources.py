@@ -91,6 +91,18 @@ def _pick(record: dict, aliases: tuple[str, ...]) -> str:
         value = record.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        # `bool` is a subclass of `int` in Python, so the numeric branch below
+        # accepted JSON `true` and returned the string "True". Nothing downstream
+        # caught it: "True" is alphanumeric, so `validate_path_segment` passes it,
+        # and a finding with `"region": true` rendered
+        # `aws ... --region True` into a runnable script and named a file
+        # `remediate-aws-<account>-True.tf`. Containment was never at risk -- the
+        # traversal shapes stay rejected -- but the tool's contract is to refuse a
+        # value it cannot use rather than render something surprising, and a type
+        # error is exactly that. `false` was no safer: it is not falsy enough to
+        # read as absent, so it became "False" the same way.
+        if isinstance(value, bool):
+            continue
         # Account IDs are frequently numeric in JSON exports.
         if isinstance(value, int):
             return str(value)

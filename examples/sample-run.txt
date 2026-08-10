@@ -1,5 +1,5 @@
 
-awsremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
+awsremgen 0.2.1 -- generated 2026-08-10T00:36:47+00:00
 
   Records read:         15
     usable findings:    13
@@ -9,7 +9,7 @@ awsremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
   Remediations written: 11
     no recipe:          1
 
-  Output: artifacts  (7 file(s), 48.2 KB)
+  Output: artifacts  (7 file(s), 48.5 KB)
   Formats: cli, hcl
   2 .sh file(s) across 2 accounts in aws.
   Split by account because no format can target more than one account at a time.
@@ -24,7 +24,7 @@ awsremgen 0.2.1 -- generated 2026-08-09T19:57:48+00:00
     remediate-aws-111111111111-us-west-2.tf  (3.3 KB)
     remediate-aws-222222222222-us-east-1.tf  (6.7 KB)
     README.md  (15.3 KB)
-    manifest.json  (5.8 KB)
+    manifest.json  (6.1 KB)
 
   Note: 4 HCL block(s) contain TODO placeholders for provider-required
   arguments that findings do not carry. Complete them before applying.

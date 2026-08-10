@@ -1,7 +1,7 @@
 {
   "generator": "azremgen (curated-cloud-remediation-generator)",
   "version": "0.2.1",
-  "generated_at": "2026-08-09T19:57:48+00:00",
+  "generated_at": "2026-08-10T00:36:48+00:00",
   "applied": false,
   "notes": "Each file targets one cloud and one credential scope (and one region where that cloud's Terraform provider is region-scoped), and must be run with credentials for it. Nothing here has been applied.",
   "clouds": [
@@ -11,6 +11,18 @@
     "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7",
     "d27e6b04-93a1-4f58-8c7d-31fb9e2a604c"
   ],
+  "remediations": 12,
+  "input": {
+    "records_read": 12,
+    "usable_findings": 9,
+    "rejected": 3,
+    "scope_conflicts": 1,
+    "duplicates_merged": 1,
+    "distinct_findings": 8,
+    "remediated": 7,
+    "withheld_by_safety_level": 0,
+    "unsupported": 1
+  },
   "policies": {
     "0662810d-c71d-46a3-a937-e1c2b24792e4": {
       "title": "Storage Account insecure communication",

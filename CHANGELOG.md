@@ -7,6 +7,42 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`manifest.json` now records what became of every input record, not only what worked.** A new
+  `input` block carries the nine counts the console summary prints — `records_read`,
+  `usable_findings`, `rejected`, `scope_conflicts`, `duplicates_merged`, `distinct_findings`,
+  `remediated`, `withheld_by_safety_level`, `unsupported` — and they reconcile:
+  `records_read = usable_findings + rejected`, `usable_findings = duplicates_merged +
+  distinct_findings`, `distinct_findings = remediated + withheld_by_safety_level + unsupported`.
+  Found by asking what a *pipeline* could tell about a bad run: a run that rejected a third of its
+  input was byte-indistinguishable in the manifest from a clean one. The counts were always printed,
+  but stderr prose is not an interface, so a scheduler had nothing to branch on.
+
+  Three details are deliberate. **Every field is written even when zero**, so an absent `input` means
+  an older generator rather than a run with nothing to report — a consumer that has to distinguish
+  those per field cannot branch on the block at all. **`scope_conflicts` stays broken out of
+  `rejected` rather than merged**, because a mis-scoped export and malformed data are fixed in
+  different places, and likewise `withheld_by_safety_level` (coverage the tool has and declined to
+  use) stays separate from `unsupported` (coverage it never had). And **the run's total
+  `remediations` moved to the top level, outside `input`** — it sums `files[].remediations`, so a
+  resource fixed by both a script and an HCL block counts twice there. The first draft of this
+  change put it inside `input` under a comment claiming the three numbers accounted for every record
+  read; on the AWS sample that read `remediations: 20` against 15 records. Mixing a per-file scale
+  into a per-record chain is the error the split now prevents, and the test asserts
+  `manifest["remediations"] > input["remediated"]` so the two cannot quietly merge again.
+
+  The console summary and the manifest now both read off one `RunCounts` instance rather than
+  deriving the numbers twice, which is what makes their agreement structural; a test parses the
+  printed summary and compares it field by field, because a manifest that disagrees with the
+  transcript of its own run gives a consumer no way to tell which is lying. Both committed samples
+  are regenerated; every `.sh`, `.tf` and artifact `README.md` changed by timestamp only.
+- **`--strict` on `generate`, for the unattended caller that reads only the exit code.** Exits 5
+  when any input record was rejected, after writing every artifact it could produce — the rejection
+  is reported, not made fatal. It reuses exit 5 rather than minting a code because the claim is the
+  existing one ("artifacts written, but something a scheduler must see did not run"), and a new code
+  would need its precedence defined against a degraded catalog for no gain. Uncovered policies are
+  **not** rejections and do not trigger it: partial coverage is the normal state of a curated
+  catalog, and conflating the two would make `--strict` nonzero on almost every real estate, which
+  trains a scheduler to ignore it.
 - **Four RDS recipes and two Azure SQL recipes — Batch 2 of both registers (6/8 → 10/10, one PR across
   both clouds).** AWS gains cluster deletion protection, instance and cluster automatic minor version
   upgrade, and public snapshot access; Azure gains SQL Server minimum TLS version and Microsoft
@@ -263,6 +299,25 @@ All notable changes to this project are documented here. The format follows
   end of the section rather than deleted, which is the realistic version of that regression.
 
 ### Fixed
+- **A JSON `true` was accepted as an identifier and rendered into a runnable command.** `bool`
+  subclasses `int` in Python, so the numeric branch in `_pick` that exists because account ids are
+  frequently numeric in exports also matched booleans and returned the string `"True"`. Nothing
+  downstream caught it: `"True"` is alphanumeric, so `validate_path_segment` passes it. A finding
+  with `"region": true` put `aws … --region True` into a generated script and named a file
+  `remediate-aws-<account>-True.tf`. `false` was no safer — it is not falsy enough to read as absent,
+  so it became `"False"` the same way.
+
+  **Containment was never at risk**; the traversal shapes stay rejected, which is why this is not a
+  security fix. What it violates is the narrower contract that makes the tool trustworthy: refuse a
+  value it cannot use rather than render something surprising. Such a record is now a rejection
+  (`missing required field(s): region`) and no artifact is written for it.
+
+  Found by decorrelating an axis the suite varied together — every existing test supplied strings, or
+  an int for `account_id`, so nothing distinguished "numeric" from "boolean". The regression test is
+  parametrized over all four required fields × `True`/`False`, because they share one `_pick`: fixing
+  only the field the bug was found in would have left the other three defective with a green suite.
+  A second test asserts it at the sink end-to-end — no `"True"` in any artifact filename, no
+  `--region True` in any body.
 - **A recipe carried a policy title the catalog had renamed, found by the new policy axis rather than by
   reading.** `e4da24ba` was titled "Storage Account local user authentication is enabled"; upstream is
   now "Storage Account default Microsoft Entra ID authentication is not enabled" — the same setting,

@@ -37,9 +37,17 @@ Exit codes, so a scheduler can branch on them:
 * ``3`` -- a recipe no longer matches the cloud's API definition. Nothing was
   generated.
 * ``4`` -- recipes could not be verified at all (no API definitions available).
-* ``5`` -- artifacts were written, but the policy-catalog change detection did not
-  run (unreadable or unwritable baseline). Distinct from ``0`` because a check that
-  did not run must not be reported as a check that passed.
+* ``5`` -- artifacts were written, but the run did not cover everything it was asked
+  to. Two causes, deliberately sharing one code because they carry one claim: the
+  policy-catalog change detection did not run (unreadable or unwritable baseline), or
+  ``--strict`` was given and at least one input record was rejected. Distinct from
+  ``0`` because a check that did not run must not be reported as a check that passed,
+  and because a run that silently dropped a third of its input must not look clean.
+  A separate code for the ``--strict`` case would have to define its precedence
+  against a degraded catalog, which buys a scheduler nothing it cannot read off the
+  summary. Note that ``--strict`` does *not* fire on findings whose policy has no
+  recipe: partial coverage is the normal state of a curated catalog, not a shortfall
+  of the run.
 * ``6`` -- the HCL could not be generated correctly: two recipes target one resource
   and disagree about what to set, or two resources in different credential scopes
   would claim one import identifier. Nothing was generated. Distinct from ``3``
@@ -84,7 +92,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from remgen import __version__
-from remgen.core.artifacts import render_manifest, render_readme
+from remgen.core.artifacts import RunCounts, render_manifest, render_readme
 from remgen.core.catalog import (
     BaselineState,
     CacheError,
@@ -434,6 +442,22 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     selected = [(r, f) for r, f in matched if r.safety_tier in allowed]
     withheld = [(r, f) for r, f in matched if r.safety_tier not in allowed]
 
+    # Built once here, and both the manifest and the console summary below read from
+    # it. Two independent derivations of "how many were rejected" is how a manifest
+    # comes to disagree with the transcript of the run that produced it -- and a
+    # consumer has no way to tell which one is lying.
+    run_counts = RunCounts(
+        records_read=len(result.findings) + len(result.rejections),
+        usable_findings=len(result.findings),
+        rejected=len(result.rejections),
+        scope_conflicts=len(scope_conflicts),
+        duplicates_merged=duplicates,
+        distinct_findings=len(unique_findings),
+        remediated=len(selected),
+        withheld_by_safety_level=len(withheld),
+        unsupported=len(unmatched),
+    )
+
     # Forecast size before doing the work, so a run that will produce hundreds of
     # megabytes says so now rather than after the user has waited for it. Warn only
     # past a threshold; an unconditional size line is noise on a normal run.
@@ -550,6 +574,7 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
                     version=__version__,
                     generated_at=generated_at,
                     command=provider.command,
+                    counts=run_counts,
                 ),
                 False,
             )
@@ -604,28 +629,29 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     # usable = duplicates + distinct, and distinct = written + withheld +
     # no-recipe. A summary whose numbers do not
     # add up invites the reader to assume the missing ones were fine.
-    total_in = len(result.findings) + len(result.rejections)
+    # Read off `run_counts`, the same object the manifest was rendered from, so the
+    # numbers a human reads and the numbers a pipeline parses cannot drift apart.
     print(f"\n{provider.command} {__version__} -- generated {generated_at}")
-    print(f"\n  Records read:         {total_in}")
-    print(f"    usable findings:    {len(result.findings)}")
-    if result.rejections:
-        print(f"    rejected:           {len(result.rejections)}")
-    if scope_conflicts:
+    print(f"\n  Records read:         {run_counts.records_read}")
+    print(f"    usable findings:    {run_counts.usable_findings}")
+    if run_counts.rejected:
+        print(f"    rejected:           {run_counts.rejected}")
+    if run_counts.scope_conflicts:
         # Broken out of the rejected count rather than added to it -- these were
         # well-formed records, so leaving them indistinguishable from malformed input
         # would misdirect whoever has to fix the export.
         print(
-            f"      scope conflicts:  {len(scope_conflicts)} "
+            f"      scope conflicts:  {run_counts.scope_conflicts} "
             f"({provider.credential_scope_noun} mismatch)"
         )
-    if duplicates:
-        print(f"    duplicates merged:  {duplicates}")
-        print(f"    distinct findings:  {len(unique_findings)}")
-    print(f"  Remediations written: {len(selected)}")
-    if withheld:
-        print(f"    withheld by level:  {len(withheld)}")
-    if unmatched:
-        print(f"    no recipe:          {len(unmatched)}")
+    if run_counts.duplicates_merged:
+        print(f"    duplicates merged:  {run_counts.duplicates_merged}")
+        print(f"    distinct findings:  {run_counts.distinct_findings}")
+    print(f"  Remediations written: {run_counts.remediated}")
+    if run_counts.withheld_by_safety_level:
+        print(f"    withheld by level:  {run_counts.withheld_by_safety_level}")
+    if run_counts.unsupported:
+        print(f"    no recipe:          {run_counts.unsupported}")
     total_bytes = sum(size for _, size in written)
     print(f"\n  Output: {out_dir}  ({len(written)} file(s), {_human_bytes(total_bytes)})")
     print(f"  Formats: {', '.join(fmt.value for fmt in formats)}")
@@ -702,7 +728,26 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     )
     # The artifacts were written, so this is not a failure -- but the catalog
     # change detection did not run, and a scheduler must be able to see that.
-    return 5 if degraded else 0
+    #
+    # `--strict` joins the same code rather than minting a new one, because it makes
+    # the same claim: everything that could be written was, and something a caller
+    # cares about did not make it in. A separate code would also have to define its
+    # precedence against a degraded catalog in the run where both are true, and
+    # "some input was lost" is not usefully more or less urgent than "drift went
+    # unchecked" -- both mean read the summary. Rejections are excluded from the
+    # default so the exit code keeps meaning "the tool worked": partial coverage is
+    # the normal state of a curated catalog, and a nonzero default would train
+    # schedulers to ignore it.
+    if degraded:
+        return 5
+    if args.strict and result.rejections:
+        print(
+            f"\n  --strict: {len(result.rejections)} input record(s) were rejected, "
+            f"so this run did not\n  cover everything it was given. Exit 5.",
+            file=sys.stderr,
+        )
+        return 5
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1335,6 +1380,18 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
             )
             + f"because neither format can target more than one {noun} at a time -- "
             "that split is not affected by this flag."
+        ),
+    )
+    gen.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "exit 5 if any input record was rejected, instead of 0. For unattended "
+            "runs: rejections always print, but a scheduler reading only the exit "
+            "code cannot otherwise tell a run that dropped half its input from a "
+            "clean one. Findings with no curated recipe are not rejections and do "
+            "not trigger this -- partial coverage is the normal state of a curated "
+            "catalog."
         ),
     )
     gen.add_argument(

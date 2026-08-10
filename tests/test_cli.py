@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -650,9 +651,206 @@ def test_manifest_paths_resolve_from_the_output_directory(env):
         assert (out / entry["path"]).is_file(), entry["path"]
 
 
+def test_manifest_records_what_did_not_make_it_in(env):
+    """Rejections and uncovered policies belong in the manifest, not only on stderr.
+
+    The manifest was a record of what worked, so a run that dropped input was
+    byte-indistinguishable from a clean one to anything that did not parse stderr
+    prose. The counts must reconcile against the records read, because a summary
+    whose numbers do not add up invites the reader to assume the rest were fine.
+    """
+    records = [
+        *GOOD.values(),
+        # Rejected: no resource_id.
+        {
+            "policyId": "8d1140ba-c917-44d7-b2ea-084f9dffe707",
+            "region": "us-east-1",
+            "accountId": "1",
+        },
+        # Unsupported: well-formed, but no curated recipe for this id.
+        {
+            "policyId": "00000000-0000-0000-0000-000000000000",
+            "resourceId": "some-resource",
+            "region": "us-east-1",
+            "accountId": "123456789012",
+        },
+    ]
+    findings = _write(env / "f.json", records)
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out)]) == 0
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    counts = manifest["input"]
+    assert counts["rejected"] == 1
+    assert counts["unsupported"] == 1
+    assert counts["records_read"] == len(records)
+
+    # The identity `RunCounts` documents, asserted against a fixture that exercises
+    # every branch of it: this input rejects one record, leaves one policy uncovered,
+    # and -- because four of GOOD are `caution` -- withholds several at the default
+    # safety level. Asserted as arithmetic rather than as hardcoded totals, which
+    # would silently start meaning something else the day the fixture's tier mix
+    # changes. `RunCounts` deliberately does not enforce this itself (raising after
+    # the artifacts are rendered would abort a correct run over its own bookkeeping),
+    # so this test is the enforcement.
+    assert counts["records_read"] == counts["usable_findings"] + counts["rejected"]
+    assert counts["usable_findings"] == counts["duplicates_merged"] + counts["distinct_findings"]
+    assert counts["distinct_findings"] == (
+        counts["remediated"] + counts["withheld_by_safety_level"] + counts["unsupported"]
+    )
+    # Non-trivial on every axis, or the three identities above would hold vacuously.
+    assert counts["remediated"] > 0
+    assert counts["withheld_by_safety_level"] > 0
+
+    # The top-level `remediations` is a *different scale* on purpose: it sums the
+    # per-file counts, so a resource fixed by both a script and an HCL block counts
+    # twice. It must therefore NOT equal the per-record `remediated`, and mixing the
+    # two into one reconciliation chain is the error this separation prevents.
+    assert manifest["remediations"] == sum(entry["remediations"] for entry in manifest["files"])
+    assert manifest["remediations"] > counts["remediated"]
+    assert "remediations" not in counts
+
+
+def test_manifest_reports_zero_rather_than_omitting_the_field(env):
+    """A clean run still carries the counts.
+
+    Written even when zero so a consumer can tell "nothing to report" from "an older
+    generator that never reported it" -- an absent key means the latter.
+    """
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    _run(["generate", "--findings", str(findings), "--out", str(out)])
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input"]["rejected"] == 0
+    assert manifest["input"]["unsupported"] == 0
+    assert manifest["input"]["scope_conflicts"] == 0
+    # Every documented field present, not just the ones this run had something to say
+    # about: a consumer that has to distinguish "0" from "key absent" per field cannot
+    # branch on the block at all.
+    assert set(manifest["input"]) == {
+        "records_read",
+        "usable_findings",
+        "rejected",
+        "scope_conflicts",
+        "duplicates_merged",
+        "distinct_findings",
+        "remediated",
+        "withheld_by_safety_level",
+        "unsupported",
+    }
+
+
+def test_manifest_counts_agree_with_the_printed_summary(env, capsys):
+    """The numbers a human reads and the numbers a pipeline parses are the same numbers.
+
+    Both now derive from one `RunCounts`, and this is what makes that structural rather
+    than incidental: two independent derivations of "how many were rejected" is how a
+    manifest comes to disagree with the transcript of the run that produced it, and a
+    consumer has no way to tell which one is lying.
+    """
+    records = [
+        *GOOD.values(),
+        {
+            "policyId": "8d1140ba-c917-44d7-b2ea-084f9dffe707",
+            "region": "us-east-1",
+            "accountId": "1",
+        },
+    ]
+    findings = _write(env / "f.json", records)
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    counts = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["input"]
+
+    for label, key in (
+        ("Records read:", "records_read"),
+        ("usable findings:", "usable_findings"),
+        ("rejected:", "rejected"),
+        ("Remediations written:", "remediated"),
+        ("withheld by level:", "withheld_by_safety_level"),
+    ):
+        match = re.search(rf"{re.escape(label)}\s+(\d+)", printed)
+        assert match, f"the summary no longer prints {label!r}"
+        assert int(match.group(1)) == counts[key], (
+            f"summary {label!r} says {match.group(1)}, manifest {key!r} says {counts[key]}"
+        )
+
+
+def test_strict_exits_nonzero_when_a_record_was_rejected(env):
+    """`--strict` is for the unattended caller that reads only the exit code."""
+    records = [
+        *GOOD.values(),
+        {
+            "policyId": "8d1140ba-c917-44d7-b2ea-084f9dffe707",
+            "region": "us-east-1",
+            "accountId": "1",
+        },
+    ]
+    findings = _write(env / "f.json", records)
+    out = env / "art"
+    argv = ["generate", "--findings", str(findings), "--out", str(out)]
+    # Same input, and the artifacts are written either way -- only the code differs.
+    assert _run(argv) == 0
+    assert _run([*argv, "--strict"]) == 5
+    assert _scripts(out), "--strict must still write the artifacts it could produce"
+
+
+def test_strict_is_quiet_when_nothing_was_rejected(env):
+    findings = _write(env / "f.json", list(GOOD.values()))
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out), "--strict"]) == 0
+
+
+def test_strict_does_not_fire_on_merely_uncovered_policies(env):
+    """Partial coverage is the normal state of a curated catalog, not a failure.
+
+    Conflating the two would make `--strict` nonzero on almost every real estate,
+    which trains a scheduler to ignore it -- the opposite of why it exists.
+    """
+    records = [
+        *GOOD.values(),
+        {
+            "policyId": "00000000-0000-0000-0000-000000000000",
+            "resourceId": "some-resource",
+            "region": "us-east-1",
+            "accountId": "123456789012",
+        },
+    ]
+    findings = _write(env / "f.json", records)
+    out = env / "art"
+    assert _run(["generate", "--findings", str(findings), "--out", str(out), "--strict"]) == 0
+
+
 # ---------------------------------------------------------------------------
 # Injection resistance -- the highest-consequence property
 # ---------------------------------------------------------------------------
+
+
+def test_a_boolean_region_never_reaches_a_command_or_a_filename(env, capsys):
+    """The end-to-end half of the boolean guard, asserted at the sink.
+
+    `tests/test_catalog_and_sources.py` proves the parser rejects it. This proves what
+    the parser was protecting: with `"region": true`, `_pick` returned "True", every
+    validator passed it because it is alphanumeric, and the run emitted
+    `aws ... --region True` in a runnable script plus a file named
+    `remediate-aws-<account>-True.tf`.
+
+    Asserted here rather than only at the parser because that is where the damage
+    was: a future alias or coercion added upstream would have to break this test too.
+    """
+    findings = _write(
+        env / "f.json",
+        [{**GOOD["cloudtrail"], "region": True}, GOOD["s3"]],
+    )
+    out = env / "art"
+    code = _run(["generate", "--findings", str(findings), "--out", str(out)])
+    captured = capsys.readouterr()
+    assert code == 0
+    # The good record still produces output; only the boolean one is refused.
+    assert "rejected:           1" in captured.out
+    assert "Traceback" not in captured.err + captured.out
+    for path in _scripts(out) + _tfs(out):
+        assert "True" not in path.name, f"a boolean reached a filename: {path.name}"
+        assert "--region True" not in path.read_text(encoding="utf-8")
 
 
 def test_malicious_findings_never_reach_artifacts(env, capsys):

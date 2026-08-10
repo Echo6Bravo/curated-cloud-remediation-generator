@@ -229,6 +229,43 @@ def test_numeric_account_id_is_accepted():
     assert rejections == ()
 
 
+@pytest.mark.parametrize("field", ["policyId", "resourceId", "region", "accountId"])
+@pytest.mark.parametrize("value", [True, False])
+def test_a_boolean_is_not_an_identifier(field, value):
+    """A JSON `true` must be rejected, not stringified into an artifact.
+
+    `bool` subclasses `int` in Python, so the numeric branch that exists for numeric
+    account ids also accepted booleans and returned "True"/"False". Nothing
+    downstream caught it: both are alphanumeric, so `validate_path_segment` passes
+    them. A finding with `"region": true` rendered
+    `aws ... --region True` into a runnable script and named a file
+    `remediate-aws-<account>-True.tf`.
+
+    Containment was never at risk -- the traversal shapes stay rejected -- so this
+    guards the narrower contract that makes the tool trustworthy: refuse a value it
+    cannot use rather than render something surprising. `false` is covered too,
+    because it is not falsy enough to read as absent and became "False" the same way.
+
+    Every required field is parametrized rather than just `region`: they share one
+    `_pick`, so a fix applied to the field this was found in would leave the others
+    with the same defect and the same passing suite.
+    """
+    findings, rejections = parse_findings(
+        [
+            {
+                "policyId": "p",
+                "resourceId": "arn:aws:rds:us-east-1:111111111111:db:mydb",
+                "region": "us-east-1",
+                "accountId": "111111111111",
+                field: value,
+            }
+        ]
+    )
+    assert findings == (), f"a boolean {field} produced a usable finding"
+    assert len(rejections) == 1
+    assert "missing required field" in rejections[0].reason
+
+
 def test_rejections_are_collected_not_dropped():
     records = [
         {"policyId": "p", "resourceId": "good", "region": "us-east-1", "accountId": "1"},

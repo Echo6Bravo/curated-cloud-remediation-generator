@@ -285,7 +285,7 @@ reconfigured while the run reports success. Nothing throws. That is why the spli
 ```
 artifacts/
 ├── README.md          ← one per run: review checklist and policy reference
-├── manifest.json      ← one per run: machine-readable index of every file
+├── manifest.json      ← one per run: index of every file, plus what became of every input record
 └── aws/
     ├── remediate-aws-111111111111-all-regions.sh
     └── remediate-aws-111111111111-us-east-1.tf
@@ -295,7 +295,8 @@ The cloud is both a directory and part of every filename, so a file stays self-d
 someone copies it out of the tree. `README.md` and `manifest.json` sit at the top rather than once
 per cloud, because reconciling a run — confirming a finding that produced no artifact was *withheld
 or unsupported*, not lost — is a property of the whole run and would be unanswerable from any single
-per-cloud index.
+per-cloud index. That reconciliation is machine-readable, not just prose: see the `input` counts
+under [Usage](#usage).
 
 Region is a hard boundary for HCL only when a cloud's Terraform provider is region-scoped, which
 `hashicorp/aws` is (region is set on the provider). It is a soft one for the CLI, where `--region`
@@ -444,6 +445,9 @@ awsremgen generate --findings findings.json --out ./artifacts --format cli
 
 # 6. Track catalog drift; new policies are reported, never auto-remediated
 awsremgen policies --catalog policies.json
+
+# 7. Unattended: exit non-zero if any input record was rejected
+awsremgen generate --findings findings.json --out ./artifacts --strict
 ```
 
 `--findings` accepts a JSON array, or an object with a `findings` array. `--format` takes a
@@ -452,6 +456,30 @@ silently skipped format, because half the expected output looks like a tool that
 Choosing `hcl` alone omits policies with no IaC equivalent, and the run says how many. Run
 `awsremgen generate --help` for the full flag list, including `--cache-dir` and `--no-save` for
 CI use.
+
+`--strict` is for the unattended caller that reads only the exit code: it exits `5` when any input
+record was rejected, **after** writing every artifact it could produce. Rejections are reported, not
+made fatal — a malformed record should not cost you the remediations for the well-formed ones.
+Findings whose policy has no recipe are **not** rejections and do not trigger it; partial coverage is
+the normal state of a curated catalog, and conflating the two would make `--strict` nonzero on almost
+every real estate, which trains a scheduler to ignore it. Without the flag, rejections are reported
+and the run still exits `0`.
+
+For a pipeline that wants the numbers rather than an exit code, `manifest.json` carries an `input`
+block with the same nine counts the run prints, which reconcile:
+
+```
+records_read       = usable_findings + rejected
+usable_findings    = duplicates_merged + distinct_findings
+distinct_findings  = remediated + withheld_by_safety_level + unsupported
+```
+
+`scope_conflicts` is a subset of `rejected` (the well-formed records whose identifier contradicted
+their credential scope), reported separately because a mis-scoped export is fixed somewhere other
+than malformed data. Every field is present even when zero, so an absent `input` block means an
+older generator rather than a run with nothing to report. Note that the manifest's **top-level**
+`remediations` is a different scale: it sums `files[].remediations`, so a resource fixed by both a
+script and an HCL block counts twice there — which is why it is not part of the chain above.
 
 **Then review the artifacts and run them yourself.** The tool's job ends when the files are
 written.
