@@ -299,6 +299,45 @@ All notable changes to this project are documented here. The format follows
   end of the section rather than deleted, which is the realistic version of that regression.
 
 ### Fixed
+- **Every generated Azure `.tf` justified its provider ceiling by citing an AWS resource type, and
+  the citation was wrong about AWS too.** The version-constraint block explains why its upper bound
+  exists, and the example it used was hardcoded into the template: "a provider major relocates
+  arguments between resources — `aws` v5 to v6 moved the `aws_s3_bucket` sub-arguments". Two defects
+  in one sentence. In an `azurerm` file it named a resource type that does not exist in the cloud the
+  file targets, so a reader who checked it learned the tool's stated reasons are decorative — worse
+  than leaving the ceiling unexplained. And the major was wrong in *both* clouds' files: the S3
+  Bucket Refactor is **v3 → v4** (13 inline parameters mapped to standalone resources), while v6's
+  only `aws_s3_bucket` change is a `region` rename. Verified against
+  `hashicorp/terraform-provider-aws`'s own `website/docs/guides/version-4-upgrade.html.markdown`
+  rather than from memory.
+
+  The example now comes from a new per-cloud `Provider.tf_provider_major_change_example`, and each
+  cloud's value is a relocation from **its own** provider's release history, landing on a resource
+  type that cloud's recipes actually write: AWS quotes the v3→v4 S3 refactor (two of whose standalone
+  resources are shipped recipes), Azure quotes `azurerm` 4 → 5 removing the `queue_properties` block
+  from `azurerm_storage_account` in favour of a standalone resource — read from that provider's
+  `website/docs/guides/5.0-upgrade-guide.html.markdown`, and the resource type 6 of the 7 Azure HCL
+  recipes write.
+
+  **Empty is a supported state and emits no example** rather than falling back to another cloud's:
+  the surrounding sentence is true without one, so omitting it costs concreteness, while borrowing
+  one costs correctness — which is the entire defect. A new cloud therefore starts
+  correct-but-general instead of inheriting a false specific. Two constructor guards make the class
+  of defect unrepeatable: an example that does not name its own provider's local name is refused
+  (a correct sentence about the wrong provider is what shipped, and no review caught it), and so is
+  one on a cloud that emits no constraint for it to appear in. The example is a separate sentence
+  rather than a clause spliced into the paragraph, so a value of any length wraps independently, and
+  every wrapped line is asserted to stay commented — an uncommented continuation would be a syntax
+  error in the middle of a file header.
+
+  Regression cover is deliberately layered, because the render-level tests alone would not have
+  caught this: the value being correct in the descriptor and the renderer handling it correctly both
+  hold while the *wiring* supplies the wrong string. So there is also an end-to-end guard asserting
+  no generated Azure artifact mentions `aws_` at all, and its positive counterpart asserting the real
+  `azurerm` relocation is present — verified by mutation, including one that drops the CLI
+  pass-through and is caught by the positive test alone. Both committed samples are regenerated; the
+  five `.tf` files change only in this paragraph.
+
 - **The run summary explained the file split with reasons that were inferred from the file count, so
   every one of them could be wrong — including one that stated something false about `azurerm`.**
   `describe_layout` gated all four of its sentences on `len(units) > 1`, which is a count and not a

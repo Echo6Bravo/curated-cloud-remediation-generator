@@ -399,15 +399,23 @@ Pinned dev ranges live in `pyproject.toml` under `[project.optional-dependencies
 
 Each `.tf` file carries a commented `required_providers` block, and the interesting half is the
 **upper** bound. Both providers ship a major roughly annually and both relocate arguments when they
-do — `hashicorp/aws` v5 to v6 moved the `aws_s3_bucket` sub-arguments, which is the resource type two
-of these recipes write. With a floor and no ceiling, `init` resolves whatever is newest on the day
-*you* run it, so a file generated against a verified provider breaks in your terminal against a major
-nobody tested — and reads as a defect in the file rather than as an untested combination.
+do — `hashicorp/aws` v3 to v4 moved 13 inline `aws_s3_bucket` parameters out to standalone resources,
+two of which these recipes write. With a floor and no ceiling, `init` resolves whatever is newest on
+the day *you* run it, so a file generated against a verified provider breaks in your terminal against
+a major nobody tested — and reads as a defect in the file rather than as an untested combination.
 
 The ceiling is therefore the *next* major, exclusive, taken from a per-cloud value that records what
 was actually verified: `hashicorp/aws` at 6.x and `hashicorp/azurerm` at 5.x today. Raising either is a
 claim that the recipes were re-verified against the newer major, so it moves in the commit that does
 one. The two clouds differ, which is why the value is per cloud rather than shared.
+
+Each file quotes one real relocation from **its own** provider's release history as the evidence for
+that ceiling, and that example is per cloud for the same reason: an Azure file citing `aws_s3_bucket`
+would be explaining itself with a resource type its cloud does not have. AWS's is the v3-to-v4 S3
+refactor above; Azure's is `azurerm` 4 to 5 removing the `queue_properties` block from
+`azurerm_storage_account` in favour of a standalone resource. Both land on a resource type these
+recipes actually write. A cloud that declares no example emits none — the surrounding sentence is true
+without one, and borrowing another provider's would not be.
 
 The floor is a different claim from the ceiling, and the block says so when they differ: it is the
 release in which each argument first existed (`>= 5.0` for AWS), which is older than what was

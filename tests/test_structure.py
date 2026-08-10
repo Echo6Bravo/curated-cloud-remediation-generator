@@ -348,6 +348,84 @@ def test_both_shipped_clouds_declare_the_major_they_were_actually_verified_again
     assert AWS.tf_provider_verified_major != AZURE.tf_provider_verified_major
 
 
+def test_each_clouds_change_example_describes_its_own_provider():
+    """The defect this field replaces, asserted against the shipped descriptors.
+
+    The example is quoted in every generated ``.tf`` as the evidence for the ceiling,
+    so it is a claim a reader can check against the provider's upgrade guide. While it
+    was hardcoded, an Azure file cited ``aws_s3_bucket`` -- right kind of change, wrong
+    cloud entirely -- so what matters is not that each value is non-empty but that
+    neither names the other's provider.
+    """
+    assert "aws" in AWS.tf_provider_major_change_example
+    assert "azurerm" in AZURE.tf_provider_major_change_example
+    assert "azurerm" not in AWS.tf_provider_major_change_example
+    assert "aws_" not in AZURE.tf_provider_major_change_example
+    assert AWS.tf_provider_major_change_example != AZURE.tf_provider_major_change_example, (
+        "one example is serving both clouds, which is the defect this field closes"
+    )
+
+
+def test_each_clouds_change_example_names_a_resource_type_that_cloud_writes():
+    """Relevance, not just correctness -- and it is checkable, so it is checked.
+
+    An example may be true of the provider and still be about a resource type these
+    recipes never emit, which makes it trivia rather than evidence for *this* file's
+    ceiling. Both shipped values were chosen to land on a resource type the recipes
+    actually write, and this asserts that rather than trusting the comment saying so.
+    """
+    for provider in (AWS, AZURE):
+        written = {r.hcl.resource_type for r in provider.all_recipes() if r.hcl is not None}
+        assert written, f"{provider.cloud} writes no HCL, so this check is vacuous"
+        example = provider.tf_provider_major_change_example
+        assert any(resource_type in example for resource_type in written), (
+            f"{provider.cloud}'s change example names none of the resource types its "
+            f"recipes write ({sorted(written)}), so it is not evidence for the ceiling "
+            f"of any file this tool generates: {example!r}"
+        )
+
+
+def test_a_change_example_describing_another_provider_is_rejected():
+    """Caught mechanically, because the defect reads perfectly well in review.
+
+    A correct sentence about the wrong provider is what shipped for as long as this was
+    hardcoded, and no reviewer noticed. The local name is matched rather than the cloud
+    id, because ``azure`` generates ``azurerm`` and the example should speak the
+    provider's own language.
+    """
+    with pytest.raises(ValueError, match="describing a different provider"):
+        _descriptor(
+            tf_provider_source="hashicorp/azurerm",
+            tf_provider_verified_major=5,
+            tf_provider_major_change_example=(
+                "aws v3 to v4 moved 13 inline `aws_s3_bucket` parameters"
+            ),
+        )
+
+
+def test_an_example_on_a_cloud_that_emits_no_constraint_is_rejected():
+    # There is nowhere for it to appear, so it is dead text asserting a verified fact
+    # -- and the day that cloud gains HCL, an unreviewed claim starts shipping. Refused
+    # at construction rather than dropped silently at render time.
+    with pytest.raises(ValueError, match="emits no constraint"):
+        _descriptor(
+            tf_provider_source="",
+            tf_provider_verified_major=0,
+            tf_provider_major_change_example="aws v3 to v4 moved some parameters",
+        )
+
+
+def test_a_cloud_may_declare_no_change_example_at_all():
+    """The supported empty state, asserted so the guards above cannot become a floor.
+
+    A new cloud must be able to ship a constraint before anyone has read its upgrade
+    guide. Requiring an example would make the cheapest way to satisfy the check
+    copying another cloud's, which is exactly the defect being fixed.
+    """
+    descriptor = _descriptor(tf_provider_source="hashicorp/gcp", tf_provider_verified_major=7)
+    assert descriptor.tf_provider_major_change_example == ""
+
+
 def test_a_provider_without_a_command_is_rejected():
     # The command name appears in generated artifacts as the way to regenerate them.
     # An empty one produces an artifact that cannot be traced back to anything.

@@ -1056,6 +1056,122 @@ def test_a_range_wholly_inside_the_verified_major_does_not_warn_about_itself():
 
 
 # ---------------------------------------------------------------------------
+# The change example: the constraint's evidence for its own ceiling
+#
+# This clause used to be a hardcoded AWS sentence in the template, so every Azure
+# `.tf` file justified its ceiling by citing `aws_s3_bucket` -- a resource type that
+# does not exist in the cloud the file targets. The tests below are about the two ways
+# that can come back: an example rendering for the wrong provider, and a cloud with no
+# example inheriting one anyway.
+# ---------------------------------------------------------------------------
+
+
+def test_the_example_is_the_one_the_caller_passed_and_not_a_builtin_specimen():
+    # The whole defect in one assertion. The AWS text is passed here, so it must be
+    # what appears; the Azure text must not, and nor must any resource type from
+    # another cloud -- which a hardcoded fallback would have reintroduced silently.
+    out = version_constraint_block(
+        provider_source="hashicorp/azurerm",
+        verified_major=5,
+        min_version="5.0",
+        change_example=(
+            "azurerm 4 to 5 removed the `queue_properties` block from `azurerm_storage_account`"
+        ),
+    )
+    assert "azurerm_storage_account" in out
+    assert "aws_s3_bucket" not in out, "an Azure constraint cited an AWS resource type"
+
+
+def test_a_caller_with_no_example_gets_a_general_explanation_not_a_borrowed_one():
+    """Empty is a supported state, and it must degrade to *general*, not to *AWS*.
+
+    The surrounding sentence -- a provider major relocates arguments between resources
+    -- is true with no example attached, so omitting the clause costs concreteness. A
+    fallback would cost correctness, which is the trade this field exists to make.
+    """
+    out = version_constraint_block(
+        provider_source="hashicorp/gcp", verified_major=7, min_version="7.0"
+    )
+    assert "For example" not in out
+    assert "aws" not in out.lower().replace("hashicorp/gcp", "")
+    # The paragraph the clause hangs off still has to read as finished prose rather
+    # than as a sentence with something excised from the middle of it.
+    assert "relocates arguments between resources" in out
+    assert 'version = ">= 7.0, < 8.0"' in out
+
+
+def test_an_example_written_as_a_sentence_does_not_emit_a_doubled_full_stop():
+    # The template supplies the stop, so a descriptor author who writes one too gets
+    # "..". Cheap to get wrong and invisible in review, since both spellings read fine
+    # in the descriptor and only the generated file shows the defect.
+    for text in ("aws v3 to v4 moved things", "aws v3 to v4 moved things."):
+        out = version_constraint_block(
+            provider_source="hashicorp/aws",
+            verified_major=6,
+            min_version="5.0",
+            change_example=text,
+        )
+        assert "For example: aws v3 to v4 moved things." in out
+        assert ".." not in out
+
+
+def test_every_line_of_the_example_stays_commented_and_within_the_block_width():
+    """Wrapping is a correctness concern here, not a cosmetic one.
+
+    An unwrapped continuation line would be *uncommented* HCL inside a commented
+    block, which `tofu validate` reads as a syntax error in the middle of the file
+    header. The width is asserted too: the rest of this block sits at 80-84, and the
+    example is the one paragraph whose length a contributor controls from a descriptor.
+    """
+    long_example = (
+        "azurerm 4 to 5 removed the `queue_properties` block from "
+        "`azurerm_storage_account`, superseding it with the standalone "
+        "`azurerm_storage_account_queue_properties` resource, which is a great deal "
+        "longer than one line of a generated file header can hold"
+    )
+    out = version_constraint_block(
+        provider_source="hashicorp/azurerm",
+        verified_major=5,
+        min_version="5.0",
+        change_example=long_example,
+    )
+    assert out.count("\n#") > 1, "the example did not wrap, so the width proves nothing"
+    for line in out.splitlines():
+        assert not line.strip() or line.startswith("#"), f"uncommented line: {line!r}"
+        assert len(line) <= 84, f"line runs wider than the block around it: {line!r}"
+
+
+def test_render_hcl_passes_the_example_through_to_the_constraint_it_justifies():
+    # The seam the CLI actually uses. `version_constraint_block` being correct proves
+    # nothing about whether the value reaches it -- which is the shape of defect that
+    # let a hardcoded example survive: the renderer was right and the wiring supplied
+    # the wrong string.
+    out = render_hcl(
+        [(_recipe(), _finding())],
+        version=VERSION,
+        generated_at=STAMP,
+        provider_source="hashicorp/aws",
+        verified_major=6,
+        change_example="aws v3 to v4 moved 13 inline `aws_s3_bucket` parameters",
+    )
+    assert "For example: aws v3 to v4 moved 13 inline `aws_s3_bucket` parameters." in out
+
+
+def test_render_hcl_omits_the_example_when_the_caller_supplies_none():
+    # The default, asserted so it cannot quietly grow a specimen the way the template
+    # once had one.
+    out = render_hcl(
+        [(_recipe(), _finding())],
+        version=VERSION,
+        generated_at=STAMP,
+        provider_source="hashicorp/aws",
+        verified_major=6,
+    )
+    assert "required_providers" in out, "no constraint was rendered, so this is vacuous"
+    assert "For example" not in out
+
+
+# ---------------------------------------------------------------------------
 # The AWS scope block -- the provider's contribution to a cloud-neutral renderer
 # ---------------------------------------------------------------------------
 

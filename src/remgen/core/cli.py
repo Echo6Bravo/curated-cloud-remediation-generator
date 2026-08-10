@@ -529,6 +529,7 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
                     scope_block=provider.hcl_scope_block,
                     provider_source=provider.tf_provider_source,
                     verified_major=provider.tf_provider_verified_major,
+                    change_example=provider.tf_provider_major_change_example,
                 ),
                 False,
             )

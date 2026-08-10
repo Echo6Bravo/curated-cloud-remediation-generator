@@ -70,6 +70,20 @@ AWS = Provider(
     # it is bumped by the commit that does one and not before. AWS and Azure differ
     # here (azurerm is still 5.x), which is why the field is per cloud.
     tf_provider_verified_major=6,
+    # v3 to v4, and the major matters: this text is quoted in every generated .tf as the
+    # evidence for the ceiling, so a reader who checks it against the upgrade guide has
+    # to find it there. It was wrong before -- the generator hardcoded "aws v5 to v6
+    # moved the aws_s3_bucket sub-arguments", and v6's only `aws_s3_bucket` entry is a
+    # `region` rename. The S3 Bucket Refactor is v4.0.0 (guide:
+    # website/docs/guides/version-4-upgrade.html.markdown, "S3 Bucket Refactor"), which
+    # mapped 13 inline parameters to standalone resources. Two of those standalone
+    # resources -- aws_s3_bucket_versioning and aws_s3_bucket_public_access_block -- are
+    # what these recipes write today, so it is also the example most relevant to this
+    # file's own contents rather than merely the most famous one.
+    tf_provider_major_change_example=(
+        "aws v3 to v4 moved 13 inline `aws_s3_bucket` parameters, including "
+        "`versioning`, out to standalone resources such as `aws_s3_bucket_versioning`"
+    ),
     verify_cli_surface=_verify_cli_surface,
     describe_cli_surface_source=index_source_description,
 )

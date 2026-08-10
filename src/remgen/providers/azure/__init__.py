@@ -308,6 +308,20 @@ AZURE = Provider(
     # that does not exist yet and has verified nothing -- exactly the unbounded case
     # this field closes, one release later.
     tf_provider_verified_major=5,
+    # azurerm's own 4-to-5 relocation, and it lands on `azurerm_storage_account` -- the
+    # resource type 6 of the 7 Azure HCL recipes write, so the example is as directly
+    # relevant to an Azure file's contents as AWS's is to an AWS one. Quoted from
+    # website/docs/guides/5.0-upgrade-guide.html.markdown, under the
+    # `azurerm_storage_account` heading: "The deprecated `queue_properties` block has
+    # been removed and superseded by the `azurerm_storage_account_queue_properties`
+    # resource." Before this field existed, generated Azure .tf files justified their
+    # ceiling by citing `aws_s3_bucket`, which is not a resource type that exists in
+    # this cloud -- a claim an Azure reader could check and find false.
+    tf_provider_major_change_example=(
+        "azurerm 4 to 5 removed the `queue_properties` block from "
+        "`azurerm_storage_account`, superseding it with the standalone "
+        "`azurerm_storage_account_queue_properties` resource"
+    ),
     # Implemented, and the first Azure axis that can actually check something. It asks
     # `az` itself rather than reading a shipped index, because Azure ships no
     # equivalent of AWS's ac.index -- see remgen.providers.azure.cli_surface for the

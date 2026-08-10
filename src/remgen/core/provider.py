@@ -134,8 +134,9 @@ class Provider:
 
             A floor with no ceiling is the shape that fails silently. Both providers
             ship a major roughly annually and both relocate arguments when they do --
-            ``aws`` v5 to v6 moved ``aws_s3_bucket`` sub-arguments, the resource type
-            two of these recipes write. Unbounded, a generated file resolves to
+            ``aws`` v3 to v4 moved 13 inline ``aws_s3_bucket`` parameters out to
+            standalone resources, two of which these recipes write. Unbounded, a
+            generated file resolves to
             whatever is newest on the day the *user* runs ``init``, so a break lands in
             their terminal against a major nobody verified, and reads as a defect in
             the file rather than as an untested combination.
@@ -143,6 +144,34 @@ class Provider:
             A major only, so a routine minor release inside a verified major needs no
             edit. Raising it is a deliberate claim that the recipes were re-verified,
             which is what ``verify``'s HCL axis and the drift canary measure.
+        tf_provider_major_change_example: One real, verified argument relocation from
+            *this* provider's own release history, quoted in the generated version
+            constraint as the evidence for why the ceiling exists. Something like
+            ``"azurerm 4 to 5 moved the azurerm_storage_account queue_properties block
+            to a separate resource"``.
+
+            Per cloud because the example is a factual claim about a specific provider,
+            and the generator used to hardcode AWS's: an Azure ``.tf`` file explained
+            its own ceiling by citing ``aws_s3_bucket``, a resource type that does not
+            exist in the cloud the file targets. A reader who checks it learns the
+            tool's stated reasons are decorative, which is worse than the ceiling being
+            unexplained.
+
+            **Empty is a supported state and emits no example**, rather than falling
+            back to another cloud's. The surrounding sentence ("a provider major
+            relocates arguments between resources") is true without one, so the cost of
+            omitting it is a less concrete explanation -- against the cost of asserting
+            something unverified about a provider, which is the failure this field
+            exists to prevent. A new cloud therefore starts correct-but-general rather
+            than inheriting a false specific.
+
+            Whoever sets it is making a claim a reader can check, so it must come from
+            the provider's own upgrade guide and name the major *in which the change
+            landed*. The AWS value was wrong on exactly that point for as long as it was
+            hardcoded: it said v5 to v6 moved the ``aws_s3_bucket`` sub-arguments, and
+            that was v3 to v4 -- the v6 guide's only ``aws_s3_bucket`` entry is a
+            ``region`` rename. Right resource, right kind of change, wrong major, in
+            every generated file.
     """
 
     cloud: str
@@ -163,6 +192,7 @@ class Provider:
     cli_requirement: str = ""
     tf_provider_source: str = ""
     tf_provider_verified_major: int = 0
+    tf_provider_major_change_example: str = ""
     verify_cli_surface: (
         Callable[[tuple[Recipe, ...]], tuple[tuple[bool, bool, str, str], ...]] | None
     ) = None
@@ -197,6 +227,27 @@ class Provider:
                 f"generated constraint has no upper bound and resolves to a major "
                 f"nobody verified"
             )
+        # The example is a claim about *this* provider, so it has to name it. Checked
+        # mechanically because the defect it replaces was precisely a correct sentence
+        # about the wrong provider -- text that reads fine and is false for the file it
+        # is in, which no reviewer caught for as long as it was hardcoded. Matching the
+        # local name (the last path segment) rather than the cloud id, since `azure`
+        # generates `azurerm` and the example should speak the provider's language.
+        if self.tf_provider_major_change_example:
+            if not self.tf_provider_source:
+                raise ValueError(
+                    f"{self.cloud}: tf_provider_major_change_example describes a provider "
+                    f"release, but tf_provider_source is empty, so this cloud emits no "
+                    f"constraint for the example to appear in"
+                )
+            local_name = self.tf_provider_source.rsplit("/", 1)[-1]
+            if local_name not in self.tf_provider_major_change_example:
+                raise ValueError(
+                    f"{self.cloud}: tf_provider_major_change_example does not mention "
+                    f"{local_name!r}, so it is describing a different provider than the "
+                    f"one it would be quoted in: "
+                    f"{self.tf_provider_major_change_example!r}"
+                )
 
 
 __all__ = ["Provider"]

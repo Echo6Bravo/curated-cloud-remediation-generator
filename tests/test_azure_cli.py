@@ -1007,3 +1007,57 @@ def test_a_volume_region_split_is_not_blamed_on_the_azurerm_provider(env, capsys
     # And the files are genuinely per-location, so the sentence describes what is on disk.
     names = sorted(p.name for p in out_dir.rglob("*.tf"))
     assert any("eastus" in n for n in names) and any("westeurope" in n for n in names), names
+
+
+def test_no_generated_azure_artifact_mentions_an_aws_resource_type(env):
+    """The shipped-output half of the change-example fix, and its permanent guard.
+
+    Every generated ``.tf`` explains its version ceiling with a real relocation from the
+    provider's own history, and that text used to be hardcoded to AWS's -- so a
+    subscription-scoped ``azurerm`` file told its reader the ceiling existed because
+    ``aws_s3_bucket`` sub-arguments moved. The sentence was true of a provider the file
+    does not use and names a resource type the cloud does not have, which is worse than
+    no explanation: a reader who checks it learns the tool's stated reasons are
+    decorative.
+
+    Asserted over **every** artifact rather than the constraint block alone, and over
+    both formats, because the class of defect is a hardcoded AWS string reaching Azure
+    output -- the version constraint is where it was found, not where it must stay. The
+    ``aws_`` prefix is matched rather than a specific type so a future example naming a
+    different AWS resource is caught by the same test.
+    """
+    out_dir = env / "art"
+    assert main(["generate", "--findings", _covered(env), "--out", str(out_dir)]) == 0
+    artifacts = sorted(out_dir.rglob("*"))
+    checked = 0
+    for path in artifacts:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        checked += 1
+        for token in ("aws_", "hashicorp/aws", "aws_s3_bucket"):
+            assert token not in text, (
+                f"{path.name} cites {token!r}, which belongs to a provider this file "
+                f"does not configure and a cloud these resources are not in"
+            )
+    assert checked, "nothing was generated, so this guard passed vacuously"
+
+
+def test_the_generated_azure_constraint_explains_itself_with_azurerms_own_history(env):
+    """The positive half: the clause is present and it is Azure's.
+
+    The leak guard above passes on output with **no** example at all, which is the
+    other way this regresses -- a wiring change that drops the value reads as a fix to
+    a cross-cloud leak. So the presence of the real ``azurerm`` relocation is asserted
+    here, on the shipped artifact, through the real command.
+    """
+    out_dir = env / "art"
+    assert main(["generate", "--findings", _covered(env), "--out", str(out_dir)]) == 0
+    files = sorted(out_dir.rglob("*.tf"))
+    assert files, "no HCL was generated"
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert "For example:" in text, f"{path.name} bounds its provider without saying why"
+        assert "azurerm_storage_account_queue_properties" in text, (
+            f"{path.name} does not quote azurerm's own relocation:\n{text}"
+        )

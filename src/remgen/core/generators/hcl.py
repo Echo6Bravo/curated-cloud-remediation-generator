@@ -61,6 +61,7 @@ by, or a dependency of this project. See NOTICE.md.
 
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
@@ -115,16 +116,25 @@ _NO_RESULTS = """
 #: unconditionally would tell an Azure reader their constraint admits untested versions
 #: when it does not, and the correction it suggests -- pin to 5.x -- is what they
 #: already have.
+#:
+#: ``{change_example}`` is the same shape of conditional, and for a sharper reason. It
+#: used to be a hardcoded AWS sentence in the paragraph below, so an Azure ``.tf`` file
+#: justified its own ceiling by citing ``aws_s3_bucket`` -- a resource type absent from
+#: the cloud the file targets. It now comes from the provider descriptor and is omitted
+#: when a cloud declares none, because the sentence it attaches to stands on its own
+#: while a borrowed example is simply false. It is a *separate sentence* rather than a
+#: clause spliced into the paragraph so that a value of any length wraps independently
+#: instead of forcing the surrounding prose to be re-wrapped per provider. See
+#: ``Provider.tf_provider_major_change_example``.
 _VERSION_CONSTRAINT = """
 # ---------------------------------------------------------------------------
 # PROVIDER VERSION
 #
 # Verified against {source} {verified_major}.x. The upper bound is deliberate: a
-# provider major relocates arguments between resources -- aws v5 to v6 moved the
-# `aws_s3_bucket` sub-arguments -- so an unbounded constraint would resolve to a
-# major these blocks were never checked against, and fail in your workspace rather
-# than in this project's CI.
-#{floor_caveat}
+# provider major relocates arguments between resources, so an unbounded constraint
+# would resolve to a major these blocks were never checked against, and fail in your
+# workspace rather than in this project's CI.
+#{change_example}{floor_caveat}
 # Commented for the same reason as the provider block below: a module may have only
 # one `required_providers` configuration, and dropping a second one into an existing
 # workspace is an error at `init`. Uncomment for standalone use.
@@ -139,6 +149,12 @@ _VERSION_CONSTRAINT = """
 # }}
 # ---------------------------------------------------------------------------
 """
+
+#: Width the provider's change example is wrapped to, including its own ``"# "`` prefix.
+#: 84 rather than this project's 100-character source limit, because these are lines in
+#: a *generated* file: the rest of this block's prose sits at 80-84, and a longer example
+#: would be the only paragraph in the header that ran wider than the text around it.
+_COMMENT_WIDTH = 84
 
 #: Appended to the block above only when the floor is older than the verified major.
 #: Leading newline included so the surrounding template needs no conditional spacing.
@@ -156,6 +172,7 @@ def version_constraint_block(
     provider_source: str,
     verified_major: int,
     min_version: str,
+    change_example: str = "",
 ) -> str:
     """Render the commented provider version constraint, or ``""`` if unavailable.
 
@@ -172,6 +189,14 @@ def version_constraint_block(
             already aggregated by :func:`group_targets`. Only its *major* is compared:
             whether the emitted range reaches below the verified major decides whether
             the block warns that part of its own range is untested.
+        change_example: One real relocation from *this* provider's history, quoted as
+            the evidence for the ceiling. See
+            :attr:`~remgen.core.provider.Provider.tf_provider_major_change_example`.
+            Defaults to empty, which emits no example -- deliberately, rather than
+            defaulting to a specimen. This function is called from tests and could be
+            called by a future cloud's generator, and the previous behaviour was a
+            hardcoded AWS sentence that shipped in Azure files. A caller that omits it
+            now gets a general explanation rather than a confident wrong one.
     """
     if not provider_source or verified_major <= 0:
         return ""
@@ -199,12 +224,26 @@ def version_constraint_block(
         if _version_key(min_version)[0] < verified_major
         else ""
     )
+    # Wrapped here rather than in the descriptor: the width is this module's business,
+    # and a sentence pre-wrapped by a contributor would silently mis-wrap the day the
+    # width changed. `.rstrip(".")` because the template supplies the full stop, so a
+    # value written as a sentence does not emit "..".
+    example = ""
+    if change_example.strip():
+        wrapped = textwrap.fill(
+            change_example.strip().rstrip("."),
+            width=_COMMENT_WIDTH,
+            initial_indent="# For example: ",
+            subsequent_indent="# ",
+        )
+        example = f"\n{wrapped}.\n#"
     return _VERSION_CONSTRAINT.format(
         source=provider_source,
         name=name,
         verified_major=verified_major,
         min_version=min_version,
         next_major=verified_major + 1,
+        change_example=example,
         floor_caveat=floor_caveat,
     )
 
@@ -795,6 +834,7 @@ def render_hcl(
     scope_block: Callable[[OutputUnit], str] | None = None,
     provider_source: str = "",
     verified_major: int = 0,
+    change_example: str = "",
 ) -> str:
     """Render a complete ``.tf`` file for the given findings.
 
@@ -824,6 +864,10 @@ def render_hcl(
             statement. Both default to "absent" so a caller that has neither renders
             as before rather than emitting a bound it cannot justify.
         verified_major: Highest provider major the recipes were verified against.
+        change_example: A real relocation from this provider's own history, quoted in
+            the version constraint as the evidence for its ceiling. Passed through from
+            the provider descriptor; omitted renders the explanation without an example
+            rather than borrowing another cloud's, which is what it used to do.
 
     Raises:
         HclGenerationError: If the pairs cannot be rendered as one correct file --
@@ -864,6 +908,7 @@ def render_hcl(
             version_constraint_block(
                 provider_source=provider_source,
                 verified_major=verified_major,
+                change_example=change_example,
                 min_version=file_minimum,
             )
         )
