@@ -40,7 +40,19 @@ _FINDING_ALIASES: dict[str, tuple[str, ...]] = {
         "arn",
     ),
     "region": ("region", "Region", "location"),
-    "account_id": ("account_id", "accountId", "AccountId", "account", "subscription_id"),
+    # `subscriptionId` earns its place beside `subscription_id`: every other
+    # Azure-facing alias here has a camelCase form, the shipped Azure sample is
+    # camelCase throughout, and an export using the natural camelCase spelling of
+    # Azure's own field name was rejected with "missing required field(s):
+    # account_id" -- which reads as a bad export rather than a missing alias.
+    "account_id": (
+        "account_id",
+        "accountId",
+        "AccountId",
+        "account",
+        "subscription_id",
+        "subscriptionId",
+    ),
     "resource_name": ("resource_name", "resourceName", "ResourceName", "name", "Name"),
 }
 

@@ -299,6 +299,57 @@ All notable changes to this project are documented here. The format follows
   end of the section rather than deleted, which is the realistic version of that regression.
 
 ### Fixed
+- **The run summary explained the file split with reasons that were inferred from the file count, so
+  every one of them could be wrong — including one that stated something false about `azurerm`.**
+  `describe_layout` gated all four of its sentences on `len(units) > 1`, which is a count and not a
+  cause. Each sentence is now derived from the units themselves: cloud from the number of clouds,
+  credential scope from the number of scopes, region from more than one region *within a single
+  scope*, and parts from a non-`None` `part`.
+
+  Three of the four misreports were ordinary and visibly wrong to the reader. One account whose HCL
+  spanned two regions was reported as "Split by account", when there is one account and both files
+  name it. A single scope chunked into numbered parts was reported as split by account *and* by
+  region. Two single-region accounts were reported as a region split, because distinct regions were
+  counted across the whole run rather than per scope — a split the operator can see did not happen.
+
+  **The fourth was a stated falsehood, and it was found by probing rather than from the original
+  finding.** A region split has two possible causes — the provider forcing it, or volume — and the
+  units cannot tell them apart, because an HCL file holding one region looks identical either way.
+  The old code inferred "provider" from `region is not None`, so a *volume-triggered* Azure HCL split
+  was explained as "this cloud's Terraform provider is region-scoped". `azurerm` takes `location` per
+  resource, so that is false for the only cloud that can reach the path. It also hid the cause that
+  was real: the volume case now says the split is "for reviewability rather than correctness" and
+  names `--max-per-file`, which is the knob that produced it — the correctness splits have no knob,
+  and implying one would be its own false claim. An explanation a reader can check and find wrong is
+  worse than none, because it teaches them the tool's stated reasons are decorative. This is the
+  same defect class as the `--help` text that once told an Azure user their HCL was split by
+  "region"; that one is pinned by `test_help_does_not_claim_hcl_is_split_by_location`.
+
+  `describe_layout` now **requires** `provider_is_region_scoped` — the one fact the units cannot
+  reveal. It is not defaulted even though `plan_units` defaults the same parameter to `True`, because
+  a safe default would have to point in opposite directions for the two: planning defensively means
+  assuming region-scoped, since over-splitting only produces extra files while under-splitting emits
+  HCL that adopts a resource from the wrong region, whereas here a default does not degrade the
+  explanation — it *asserts* something about the provider that may be false, at exactly the call site
+  whose author forgot to think about it.
+
+  Found by running all four format × provider-scoping combinations and reading the output, after
+  noticing that the volume-triggered region split was tested only on the AWS CLI while HCL was tested
+  only region-scoped, where the hard boundary fires first and masks the threshold. The regression
+  tests cover the four cells, assert the *absence* of each sentence in a layout with exactly one
+  cause, and pin the threshold at 500 and 501 (the condition is `>`, so landing on the default must
+  not split). One further test runs `azremgen` end-to-end over 501 findings in one subscription
+  across two locations and asserts the printed summary does not say "region-scoped": the unit tests
+  prove the function picks the right sentence when told the truth about the provider, and nothing in
+  them can catch a call site that hardcodes `True`. That mutation was made, and the whole suite
+  stayed green until this test existed. No committed sample changed — both are real multi-account
+  splits, verified by running the staleness gate rather than assumed.
+
+- **`subscriptionId` was not an accepted alias for the credential scope.** Every other Azure-facing
+  alias has a camelCase form and the shipped Azure sample is camelCase throughout, so an export using
+  the natural camelCase spelling of Azure's own field name was rejected with
+  `missing required field(s): account_id` — which reads as a bad export rather than a missing alias.
+
 - **A JSON `true` was accepted as an identifier and rendered into a runnable command.** `bool`
   subclasses `int` in Python, so the numeric branch in `_pick` that exists because account ids are
   frequently numeric in exports also matched booleans and returned the string `"True"`. Nothing

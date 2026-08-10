@@ -943,3 +943,67 @@ def test_policies_requires_a_catalog_and_the_hint_names_azure(capsys):
         main(["policies"])
     err = capsys.readouterr().err
     assert "--catalog" in err
+
+
+def test_a_volume_region_split_is_not_blamed_on_the_azurerm_provider(env, capsys):
+    """The run summary must not tell an Azure user ``azurerm`` is region-scoped.
+
+    The end-to-end half of the same defect ``test_help_does_not_claim_hcl_is_split_by
+    _location`` pins for ``--help``: correct output described with a false reason. Both
+    Azure formats split by region here, and for both of them the cause is **volume**,
+    because ``azurerm`` takes ``location`` per resource. Explaining that as a provider
+    constraint would send a reader looking for a rule that does not exist in their cloud
+    and hide the ``--max-per-file`` knob that actually caused it.
+
+    Asserted through ``azremgen`` rather than on :func:`describe_layout` directly, and
+    that is the whole point of the test. The unit tests in ``tests/test_layout.py`` prove
+    the function picks the right sentence *when it is told the truth about the provider*;
+    nothing there can catch a call site that hardcodes ``provider_is_region_scoped=True``
+    -- which was verified by making exactly that mutation and watching the whole suite
+    stay green. Azure is the only shipped provider where the two differ, so this file is
+    the only place the wiring is observable.
+
+    501 findings across two locations, one subscription: one over
+    ``_CLI_REGION_SPLIT_THRESHOLD``, so volume triggers the soft region split for the
+    CLI *and* for HCL on this provider. ``--max-per-file`` is left at its default rather
+    than lowered to keep the run small, because the threshold and the default are the
+    same constant -- passing a smaller one would test a configuration no user runs.
+    """
+    recipe = next(
+        r for r in AZURE.all_recipes() if r.hcl and r.hcl.resource_type == "azurerm_storage_account"
+    )
+    records = [
+        {
+            "policyId": recipe.policy_id,
+            "resourceId": (
+                f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-prod"
+                f"/providers/Microsoft.Storage/storageAccounts/prodlogs{index:05d}"
+            ),
+            # Two locations, alternating, so neither is below the threshold on its own.
+            "region": "eastus" if index % 2 == 0 else "westeurope",
+            "accountId": SUBSCRIPTION,
+        }
+        for index in range(501)
+    ]
+    path = env / "bulk.json"
+    path.write_text(json.dumps(records), encoding="utf-8")
+    out_dir = env / "art"
+
+    assert main(["generate", "--findings", str(path), "--out", str(out_dir)]) == 0
+    out = capsys.readouterr().out
+
+    # The split really happened, or the assertion below passes for the wrong reason:
+    # a run that never split by region emits no region sentence at all.
+    assert out.count("Split by region") == 2, (
+        f"expected a region split reported for both formats, got:\n{out}"
+    )
+    assert "region-scoped" not in out, (
+        f"azremgen blamed a volume-triggered split on azurerm being region-scoped, "
+        f"which it is not:\n{out}"
+    )
+    assert "--max-per-file" in out, (
+        f"the volume split did not point at the knob that controls it:\n{out}"
+    )
+    # And the files are genuinely per-location, so the sentence describes what is on disk.
+    names = sorted(p.name for p in out_dir.rglob("*.tf"))
+    assert any("eastus" in n for n in names) and any("westeurope" in n for n in names), names

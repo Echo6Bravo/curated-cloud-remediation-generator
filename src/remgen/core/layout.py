@@ -46,15 +46,27 @@ hard-coding AWS's.
 
 **Soft boundaries. Applied only when a file would be too large to review:**
 
-* CLI script: split by region next. The region travels on every command, so a
-  single-scope script spanning regions is correct -- this split is purely about
-  file size, which is why it is conditional.
+* **Region, wherever it is not already a hard boundary.** That is the CLI on every
+  cloud, and *also HCL on a cloud whose provider is not region-scoped* -- Azure
+  reaches this path, because ``azurerm`` carries ``location`` per resource. The
+  region travels with each remediation in both of those cases, so a single-scope
+  file spanning regions is correct; the split is purely about file size, which is
+  why it is conditional on :data:`_CLI_REGION_SPLIT_THRESHOLD`.
 * Both formats: after the boundaries above, split into numbered parts.
 
 The asymmetry is the point: region can be a hard boundary for HCL and a soft one
 for the CLI, because the two formats carry region differently. Encoding that as a
 size heuristic for both would either emit unrunnable HCL or fragment CLI scripts
 for no reason.
+
+**A consequence worth stating, because getting it wrong shipped a false claim:**
+the same region split has two possible causes, and the units cannot tell them
+apart -- an HCL file holding one region looks identical whether the provider
+forced it or volume triggered it. Only the provider's scoping distinguishes them,
+which is why :func:`describe_layout` *requires* that fact rather than defaulting
+it. Before this was fixed, a volume-triggered Azure split was explained as
+"this cloud's Terraform provider is region-scoped", which is false for
+``azurerm``.
 
 Everything here is pure: it decides file names and grouping and touches no
 filesystem, so the layout is unit-testable without writing anything.
@@ -271,12 +283,47 @@ def plan_units(
     return units
 
 
-def describe_layout(units: list[OutputUnit]) -> list[str]:
+def describe_layout(units: list[OutputUnit], *, provider_is_region_scoped: bool) -> list[str]:
     """Explain the split, so the operator knows why they got several files.
 
     A directory that silently contains 40 files reads as a bug. Stating the rule
     that produced them, and the credential requirement they imply, is the
     difference between a split that helps and one that confuses.
+
+    **Each sentence is emitted only when that split actually happened**, and each is
+    derived from the units rather than from the file count. An earlier version keyed
+    every sentence off ``len(units) > 1``, which made all four claims wrong in
+    ordinary cases: one account split across two regions was reported as "split by
+    account", a single scope chunked into parts was reported as split by account
+    *and* by region, and -- the one that matters most -- a volume-triggered region
+    split on Azure was explained as "this cloud's Terraform provider is
+    region-scoped", which is **false for azurerm**. An explanation a reader can
+    check and find wrong is worse than none, because it teaches them the tool's
+    stated reasons are decorative.
+
+    Args:
+        units: The planned output units. Whether a split happened is read off these:
+            a cloud split shows up as more than one cloud, a scope split as more than
+            one scope, a region split as more than one region *within a single scope*
+            (two single-region scopes are a scope split, not a region split), and a
+            size split as a non-``None`` ``part``.
+        provider_is_region_scoped: Whether this cloud's Terraform provider covers one
+            region. Needed because it is the one thing the units cannot reveal: a
+            region split looks identical whether it was forced by the provider or
+            triggered by volume, and those get different sentences because only the
+            first is a correctness requirement. Passed to
+            :meth:`Format.region_is_hard_boundary` rather than reasoned about here,
+            so this function and the planner cannot disagree about the same rule.
+
+            **Required, unlike the same parameter on** :func:`plan_units`, which
+            defaults it to ``True``. The defaults would have to point in opposite
+            directions to be safe, so there is no honest shared one. Planning
+            defensively means assuming region-scoped: over-splitting produces more
+            files than necessary, while under-splitting emits HCL that adopts a
+            resource from the wrong region. Describing has no such fallback -- a
+            default here does not degrade the explanation, it *asserts* something
+            about the provider that may be false, and it is exactly the caller who
+            forgets to pass it who gets the wrong sentence with no warning.
     """
     if not units:
         return []
@@ -289,21 +336,44 @@ def describe_layout(units: list[OutputUnit]) -> list[str]:
     lines = [
         f"  {len(units)} {ext} file(s) across {len(scopes)} {plural} in {', '.join(clouds)}.",
     ]
-    if len(units) > 1:
+
+    # Per (cloud, scope), because a region split means one credential scope's output
+    # went to several files. Two scopes that each hold one region span two regions in
+    # total while no region split occurred -- reporting that as one would explain a
+    # split the operator can see did not happen.
+    regions_per_scope: dict[tuple[str, str], set[str | None]] = {}
+    for unit in units:
+        regions_per_scope.setdefault((unit.cloud, unit.scope_id), set()).add(unit.region)
+    split_by_region = any(len(regions) > 1 for regions in regions_per_scope.values())
+
+    if len(clouds) > 1:
+        lines.append("  Split by cloud because each file targets one vendor CLI or provider.")
+    if len(scopes) > 1:
         lines.append(
             f"  Split by {noun} because no format can target more than one {noun} at a time."
         )
-        if len(clouds) > 1:
-            lines.append("  Split by cloud because each file targets one vendor CLI or provider.")
-        if first.fmt is Format.HCL and any(u.region is not None for u in units):
+    if split_by_region:
+        if first.fmt.region_is_hard_boundary(provider_is_region_scoped=provider_is_region_scoped):
             lines.append(
                 "  Split by region because this cloud's Terraform provider is region-scoped."
             )
-        if any(u.part is not None for u in units):
+        else:
+            # The volume-triggered split. Said out loud as a reviewability measure
+            # rather than a correctness one, because it is: this format carries its
+            # own region, so merging these files would still have been runnable.
+            # That also tells the operator the knob exists -- the correctness splits
+            # above have no knob, and conflating the two would imply they do.
             lines.append(
-                "  Large scopes were split into numbered parts for reviewability; "
-                "run the parts of a scope in order."
+                f"  Split by region because this {noun} has more remediations than one "
+                f"file should hold.\n  This format carries its own region, so the split "
+                f"is for reviewability rather than correctness (see --max-per-file)."
             )
+    if any(u.part is not None for u in units):
+        lines.append(
+            "  Large scopes were split into numbered parts for reviewability; "
+            "run the parts of a scope in order."
+        )
+    if len(units) > 1:
         lines.append(f"  Each file must be run with credentials for the {noun} in its name.")
     return lines
 

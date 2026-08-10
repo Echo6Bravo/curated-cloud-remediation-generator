@@ -655,8 +655,15 @@ def cmd_generate(args: argparse.Namespace, provider: Provider) -> int:
     total_bytes = sum(size for _, size in written)
     print(f"\n  Output: {out_dir}  ({len(written)} file(s), {_human_bytes(total_bytes)})")
     print(f"  Formats: {', '.join(fmt.value for fmt in formats)}")
-    _emit(describe_layout(cli_units))
-    _emit(describe_layout(hcl_units))
+    # The provider's region scoping is passed, not assumed: it is what separates "split
+    # by region because the provider demands it" from "split by region because this
+    # scope was too big to review", and only the planner and the provider know which.
+    _emit(
+        describe_layout(cli_units, provider_is_region_scoped=provider.hcl_provider_is_region_scoped)
+    )
+    _emit(
+        describe_layout(hcl_units, provider_is_region_scoped=provider.hcl_provider_is_region_scoped)
+    )
     if written and (args.verbose or len(written) <= 8):
         for path, size in written:
             print(f"    {path.name}  ({_human_bytes(size)})")

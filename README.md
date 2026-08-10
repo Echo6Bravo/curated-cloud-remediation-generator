@@ -305,7 +305,12 @@ provider rather than assumed, since `azurerm` takes `location` per resource and 
 same way.
 
 `--max-per-file` adds a further *soft* cap for reviewability (default 500, `0` disables it). It
-does not and cannot relax the cloud/account/region split.
+cannot relax a **hard** boundary: cloud and credential scope always split, and so does region for
+HCL on a region-scoped provider, because those are correctness rules rather than preferences. It
+does govern the **soft** region split — above the cap, a single scope's output is divided by region
+even where region is not a hard boundary, which is the CLI on every cloud and HCL on a provider like
+`azurerm`. The run summary says which of the two caused any region split it reports, and names this
+flag when the cause was volume.
 
 Generated AWS shell scripts include an identity preflight: they check the caller's account with
 `aws sts get-caller-identity` and **exit non-zero without running anything** if it does not match

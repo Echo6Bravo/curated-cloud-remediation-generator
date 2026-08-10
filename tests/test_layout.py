@@ -142,6 +142,101 @@ def test_cli_splits_regions_once_large():
     assert all(u.region is not None for u in units)
 
 
+# The volume-triggered region split, decorrelated from format and from cloud.
+#
+# `split_by_region` is one `or` over two independent causes -- the format/provider
+# hard boundary, and the volume threshold -- and every test above holds both axes at
+# once: HCL is always tested region-scoped (where the hard boundary fires first and
+# masks the threshold entirely) and the volume case was only ever tested on the AWS
+# CLI. So the untested cell is the one that matters: **HCL on a provider that is not
+# region-scoped, above the threshold.** Azure is exactly that shape, and nothing
+# reached it.
+_REGION_SCOPING = [
+    pytest.param(Format.CLI, True, "aws", "account", id="aws-cli"),
+    pytest.param(Format.CLI, False, "azure", "subscription", id="azure-cli"),
+    pytest.param(Format.HCL, True, "aws", "account", id="aws-hcl-region-scoped"),
+    # The cell no other test covers.
+    pytest.param(Format.HCL, False, "azure", "subscription", id="azure-hcl-not-region-scoped"),
+]
+
+
+@pytest.mark.parametrize("fmt,region_scoped,cloud,noun", _REGION_SCOPING)
+@pytest.mark.parametrize(
+    "count,expect_region_split",
+    [
+        # Exactly at the threshold is NOT over it: the condition is `>`, and an
+        # off-by-one here would split every run that happens to land on the default.
+        (DEFAULT_MAX_PER_FILE, False),
+        (DEFAULT_MAX_PER_FILE + 1, True),
+    ],
+    ids=["at-threshold", "one-over-threshold"],
+)
+def test_volume_triggers_a_region_split_independently_of_format(
+    fmt, region_scoped, cloud, noun, count, expect_region_split
+):
+    """Above the threshold, region splits for *any* format -- not just the CLI.
+
+    The two regions are chosen so neither exceeds the threshold alone; only the
+    combined scope does. That keeps this a test of the region decision rather than of
+    the part-chunking that follows it.
+    """
+    specs = [(f"b{i}", "r-one" if i % 2 else "r-two", "scope-1") for i in range(count)]
+    units = _plan(
+        _pairs(specs),
+        fmt,
+        cloud=cloud,
+        provider_is_region_scoped=region_scoped,
+        scope_noun=noun,
+    )
+    # A hard boundary splits by region at any size, so it is region-split either way.
+    hard = fmt.region_is_hard_boundary(provider_is_region_scoped=region_scoped)
+    split = any(u.region is not None for u in units)
+    assert split is (hard or expect_region_split), (
+        f"{fmt.value}/region_scoped={region_scoped} at {count}: region split={split}"
+    )
+    if split:
+        # Whatever the cause, the invariant holds: a file naming a region contains
+        # only that region. A split that mislabels its contents is worse than none.
+        for unit in units:
+            if unit.region is not None:
+                assert {f.region for _, f in unit.pairs} == {unit.region}
+
+
+@pytest.mark.parametrize("fmt,region_scoped,cloud,noun", _REGION_SCOPING)
+def test_the_stated_reason_for_a_region_split_matches_the_actual_cause(
+    fmt, region_scoped, cloud, noun
+):
+    """A volume split must not be explained as a provider constraint.
+
+    This is the defect that made the whole batch worth doing: `describe_layout`
+    inferred the cause from `region is not None`, so a volume-triggered Azure HCL
+    split was explained as "this cloud's Terraform provider is region-scoped" --
+    false for `azurerm`, and stated to an operator with total confidence. An
+    explanation a reader can check and find wrong teaches them the tool's stated
+    reasons are decorative, which is worse than printing nothing.
+    """
+    count = DEFAULT_MAX_PER_FILE + 1
+    specs = [(f"b{i}", "r-one" if i % 2 else "r-two", "scope-1") for i in range(count)]
+    units = _plan(
+        _pairs(specs), fmt, cloud=cloud, provider_is_region_scoped=region_scoped, scope_noun=noun
+    )
+    joined = " ".join(describe_layout(units, provider_is_region_scoped=region_scoped))
+
+    if fmt.region_is_hard_boundary(provider_is_region_scoped=region_scoped):
+        assert "region-scoped" in joined
+        assert "--max-per-file" not in joined
+    else:
+        # The volume cause, named as reviewability and pointing at the knob that
+        # controls it -- the correctness splits have no knob, so implying one would
+        # be its own false claim.
+        assert "region-scoped" not in joined, (
+            "a volume-triggered split was explained as a provider constraint"
+        )
+        assert "more remediations than one file should hold" in joined
+        assert "--max-per-file" in joined
+        assert "reviewability rather than correctness" in joined
+
+
 # ---------------------------------------------------------------------------
 # Cloud, the outermost hard boundary
 # ---------------------------------------------------------------------------
@@ -270,7 +365,7 @@ def test_layout_is_independent_of_input_order():
 @pytest.mark.parametrize("fmt", [Format.CLI, Format.HCL])
 def test_empty_input_produces_no_units(fmt):
     assert _plan([], fmt) == []
-    assert describe_layout([]) == []
+    assert describe_layout([], provider_is_region_scoped=True) == []
 
 
 # ---------------------------------------------------------------------------
@@ -278,40 +373,124 @@ def test_empty_input_produces_no_units(fmt):
 # ---------------------------------------------------------------------------
 
 
+def _describe(pairs, fmt, *, region_scoped=True, **kwargs):
+    """Plan and describe with one consistent view of the provider's region scoping.
+
+    Both calls take it, and passing two different values would describe a layout that
+    was never planned -- which is the class of defect these tests exist to catch.
+    """
+    kwargs.setdefault("provider_is_region_scoped", region_scoped)
+    units = _plan(pairs, fmt, **kwargs)
+    return " ".join(describe_layout(units, provider_is_region_scoped=region_scoped))
+
+
 def test_describe_layout_states_the_credential_requirement():
     # A directory of 40 files with no explanation reads as a bug, and an operator
     # who does not know each needs its own credentials will run the first and stop.
     specs = [("b1", "us-east-1", "111111111111"), ("b2", "us-east-1", "222222222222")]
-    lines = describe_layout(_plan(_pairs(specs), Format.CLI))
-    joined = " ".join(lines)
+    joined = _describe(_pairs(specs), Format.CLI)
     assert "2 accounts" in joined
     assert "credentials for the account in its name" in joined
 
 
 def test_describe_layout_names_the_cloud():
-    lines = describe_layout(_plan(_pairs([("b1", "us-east-1", "1")]), Format.CLI))
-    assert "in aws" in " ".join(lines)
+    assert "in aws" in _describe(_pairs([("b1", "us-east-1", "1")]), Format.CLI)
 
 
 def test_describe_layout_explains_the_region_split_only_for_hcl():
     specs = [("b1", "us-east-1", "1"), ("b2", "eu-west-1", "1")]
-    hcl = " ".join(describe_layout(_plan(_pairs(specs), Format.HCL)))
-    assert "region-scoped" in hcl
-    cli = " ".join(describe_layout(_plan(_pairs(specs), Format.CLI)))
-    assert "region-scoped" not in cli
+    assert "region-scoped" in _describe(_pairs(specs), Format.HCL)
+    assert "region-scoped" not in _describe(_pairs(specs), Format.CLI)
 
 
 def test_describe_layout_uses_the_clouds_own_noun():
     specs = [("b1", "eastus", "sub-1"), ("b2", "eastus", "sub-2")]
-    lines = describe_layout(
-        _plan(_pairs(specs), Format.CLI, cloud="azure", scope_noun="subscription")
-    )
-    joined = " ".join(lines)
+    joined = _describe(_pairs(specs), Format.CLI, cloud="azure", scope_noun="subscription")
     assert "subscriptions" in joined
     assert "account" not in joined
 
 
 def test_describe_layout_mentions_parts_when_it_split_for_size():
     specs = [(f"b{i}", "us-east-1", "1") for i in range(25)]
-    lines = describe_layout(_plan(_pairs(specs), Format.HCL, max_per_file=10))
-    assert any("parts" in line for line in lines)
+    assert "parts" in _describe(_pairs(specs), Format.HCL, max_per_file=10)
+
+
+# ---------------------------------------------------------------------------
+# The explanation names the cause that actually applied
+# ---------------------------------------------------------------------------
+#
+# Every sentence used to be gated on `len(units) > 1`, which is a count and not a
+# cause. Each test below is a layout with exactly ONE cause, asserting the other
+# sentences stay absent -- the assertion the old implementation could not satisfy.
+
+
+def test_one_scope_split_by_region_is_not_described_as_a_scope_split():
+    # The plainest case, and it was wrong: a single AWS account whose HCL spans two
+    # regions was told "Split by account", which an operator can immediately see is
+    # false -- there is one account, and both files name it.
+    specs = [("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "111111111111")]
+    joined = _describe(_pairs(specs), Format.HCL)
+    assert "region-scoped" in joined
+    assert "Split by account" not in joined
+    assert "1 accounts" in joined
+    # Two files, no parts. Asserted here rather than only in the size-only test below,
+    # because that one is the *positive* case for parts: re-gating this sentence on the
+    # file count would keep it passing while telling everyone with two files to "run the
+    # parts of a scope in order", of a scope that has no parts.
+    assert "numbered parts" not in joined
+
+
+def test_a_size_only_split_claims_neither_a_scope_nor_a_region_split():
+    # One account, one region, chunked into parts. Both other sentences were printed.
+    specs = [(f"b{i}", "us-east-1", "111111111111") for i in range(25)]
+    joined = _describe(_pairs(specs), Format.HCL, max_per_file=10)
+    assert "numbered parts" in joined
+    assert "Split by account" not in joined
+    assert "Split by region" not in joined
+
+
+def test_a_scope_split_alone_claims_no_region_split():
+    # Two accounts, one region each. Two regions appear across the run, but no
+    # scope's output was split by region -- so counting distinct regions globally
+    # (rather than per scope) would report a split that did not happen.
+    specs = [("b1", "us-east-1", "111111111111"), ("b2", "eu-west-1", "222222222222")]
+    joined = _describe(_pairs(specs), Format.HCL)
+    assert "Split by account" in joined
+    assert "Split by region" not in joined
+    assert "numbered parts" not in joined
+
+
+def test_a_single_file_is_described_without_claiming_any_split():
+    joined = _describe(_pairs([("b1", "us-east-1", "1")]), Format.CLI)
+    assert "1 .sh file(s)" in joined
+    assert "Split by" not in joined
+    # The credential sentence is also a split consequence, so it goes too: telling
+    # someone with one file that "each file needs its own credentials" is noise.
+    assert "credentials for the" not in joined
+
+
+def test_every_split_cause_can_be_reported_at_once():
+    # The complement of the tests above: with all four causes genuinely present, all
+    # four sentences must appear. Otherwise a fix that suppressed sentences too
+    # eagerly would pass every single-cause test.
+    specs = [
+        (f"b{i}", region, account)
+        for account in ("111111111111", "222222222222")
+        for region in ("us-east-1", "eu-west-1")
+        for i in range(6)
+    ]
+    units = _plan(_pairs(specs), Format.HCL, max_per_file=3)
+    joined = " ".join(describe_layout(units, provider_is_region_scoped=True))
+    assert "Split by account" in joined
+    assert "region-scoped" in joined
+    assert "numbered parts" in joined
+    assert "credentials for the account" in joined
+
+
+def test_describe_layout_requires_the_providers_region_scoping():
+    # Not defaulted, deliberately: a default does not degrade the explanation, it
+    # asserts something about the provider that may be false -- and the caller who
+    # forgets is exactly the one who would get the wrong sentence silently.
+    units = _plan(_pairs([("b1", "us-east-1", "1")]), Format.CLI)
+    with pytest.raises(TypeError):
+        describe_layout(units)

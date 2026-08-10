@@ -229,6 +229,28 @@ def test_numeric_account_id_is_accepted():
     assert rejections == ()
 
 
+def test_camelcase_subscription_id_is_accepted():
+    """`subscriptionId` is as natural a spelling as `subscription_id`.
+
+    Every other Azure-facing alias has a camelCase form and the shipped Azure sample
+    is camelCase throughout, so an export using Azure's own field name in Azure's own
+    casing was rejected for a missing `account_id` -- which reads as a bad export
+    rather than a missing alias.
+    """
+    findings, rejections = parse_findings(
+        [
+            {
+                "policyId": "p",
+                "resourceId": "r",
+                "region": "eastus",
+                "subscriptionId": "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7",
+            }
+        ]
+    )
+    assert rejections == ()
+    assert findings[0].account_id == "8f4a1c62-5d90-4e7b-9a3f-2c6b8d10e5a7"
+
+
 @pytest.mark.parametrize("field", ["policyId", "resourceId", "region", "accountId"])
 @pytest.mark.parametrize("value", [True, False])
 def test_a_boolean_is_not_an_identifier(field, value):
